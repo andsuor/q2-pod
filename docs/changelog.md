@@ -5,6 +5,7 @@
   - Card apps: Stream mode can play a playlist file of songs on the card, waiting for each streamed song as it arrives, so an app can mix synced and streamed songs. Streaming now takes every format the Q2 plays, not only FLAC and MP3.
   - Card apps: a progress row shows a bar in Q2 Pod's style, for an app's sync or download progress.
   - Card apps: an app can ask the Q2 to update the library and import its playlists after a sync. The Q2 waits until nothing is playing (AirPlay and Bluetooth audio included) and no Library list is open, shows the usual Update Local Music progress, and replaces the app's own playlists instead of adding copies, while a playlist of yours with the same name is left alone.
+  - Card apps: an app can have its long lists load in full, up to 500 rows, instead of stopping at 50 behind More…, so the wheel speeds up and shows the big letter through the whole list, as in the Library. Other apps, and lists that keep updating (such as downloads), still show More….
 
 - **1.5.7**:
   - Buttons: a Centre press made while the top button (Back) is held is ignored, so a loose wheel that closes both on one press only goes back.

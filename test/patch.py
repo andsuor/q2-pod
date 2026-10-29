@@ -10628,7 +10628,7 @@ passed()
 # this firmware has as words on one line (docs/internals.md, Capabilities), so an app tells it from older
 # firmware, which has no file; written once, while absent.
 CAPS='/tmp/q2-addon.caps'
-m=AppMachine(); stream_rows(m); assert m.files[CAPS]==b'playlist progress library\n',m.files.get(CAPS)
+m=AppMachine(); stream_rows(m); assert m.files[CAPS]==b'playlist progress library pages\n',m.files.get(CAPS)
 m.files[CAPS]=bytearray(b'x\n'); stream_rows(m); assert m.files[CAPS]==b'x\n'; passed()
 # Stock's Baidu Netdisk row (a Chinese cloud drive; list_baidu's icon) is gone from Streaming, destroyed; its
 # TIDAL row stays first.
@@ -10734,6 +10734,50 @@ m.pick(1); m.answer('ok','','100',[('info','','Second','','','')]); assert m.req
 # cursor followed the ones before, "search aphex 50 100", which q2-deezer read as the second page again).
 m.pick(1); m.answer('ok','','',[]); assert m.requests[-1]==('search','aphex%09twin','100'),m.requests[-1]
 m.back(); m.answer('ok','','100',[('info','','Second','','','')]); assert m.requests[-1]==('search','aphex%09twin','50'); passed()
+# Full lists (addon.c page_next): a reply whose message is "pages" (the app opts in) and that has a cursor is
+# followed by its next pages, each asked with the list's own arguments and the newest cursor (as More… asks),
+# their rows added to the same list under a Loading… row that does nothing, the rows on screen, the selected row
+# and the scroll left as they are, until no cursor is left. Any other reply with a cursor keeps More… (above), a
+# live one as well: its 2 s refresh asks the first page alone.
+def arts(k,n=50): return [('list','artist',f'Artist {k*50+i:03}','',f'ar-{k*50+i}','playartist') for i in range(n)]
+s=SlskMachine(); s.open(); s.answer('ok','refresh','',SMENU); s.pick(2); s.answer('ok','pages','c1',arts(0))
+view=s.find('scroll_view'); rows=s.rows(); assert len(rows)==51 and s.labels()[-2:]==['Loading…',''],s.labels()[-2:]
+asked=len(s.threads); s.pick(50); assert len(s.threads)==asked
+s.nodes[view]['_ringnav_index']=7; s.word(view+O['SCROLL_Y'],6*64); y=s.get(view+O['SCROLL_Y'])  # row 7 on screen
+s.answer('ok','pages','c2',arts(1)); assert s.requests[-1]==('downloads','c1') and s.rows()[:50]==rows[:50] and len(s.rows())==101,s.requests[-1]
+assert s.nodes[view]['_ringnav_index']==7 and s.get(view+O['SCROLL_Y'])==y and s.get(view+O['VIEW_CONTENT_H'])==101*64
+s.answer('ok','pages','',arts(2,20)); assert s.requests[-1]==('downloads','c2') and len(s.rows())==120 and s.labels()[-2:]==['Artist 119','']
+t=len(s.threads); s.advance(2000); assert len(s.threads)==t; passed()
+# Play/Pause held on an appended row sends its hold op; the level is asked again from its first page (the action
+# may change it) and the row comes back once its page is there, as after Back from a row's level.
+s.top=s.page; s.status=s.alloc(0x200); s.nodes[view]['_ringnav_index']=70; s.press(80); assert s.hold()==11
+s.answer('ok','Playing Artist 070','',[]); assert s.requests[-1]==('playartist','ar-70'),s.requests[-1]
+s.answer('ok','pages','c1',arts(0)); view=s.find('scroll_view'); assert s.nodes[view]['_ringnav_index']==50
+s.answer('ok','pages','c2',arts(1)); assert s.nodes[view]['_ringnav_index']==70; s.answer('ok','pages','',arts(2,20))
+s.pick(105); s.answer('ok','','',[]); s.back(); s.answer('ok','pages','c1',arts(0)); s.answer('ok','pages','c2',arts(1)); s.answer('ok','pages','',arts(2,20))
+assert s.requests[-3:]==[('downloads',),('downloads','c1'),('downloads','c2')] and s.nodes[s.find('scroll_view')]['_ringnav_index']==105; passed()
+# Without "pages" (every app before it: q2-deezer, q2-soulseek, q2-filebrowser) a reply with a cursor keeps
+# More… and nothing more is asked; a later page without it ends the list at More… as well.
+s.back(); s.answer('ok','refresh','',SMENU); s.pick(2); t=len(s.threads); s.answer('ok','','c1',arts(0))
+assert len(s.threads)==t and len(s.rows())==51 and s.labels()[-2:]==['More…',''],s.labels()[-2:]
+s.back(); s.answer('ok','refresh','',SMENU); s.pick(2); s.answer('ok','pages','c1',arts(0)); t=len(s.threads); s.answer('ok','','c2',arts(1))
+assert s.requests[-1]==('downloads','c1') and len(s.threads)==t and len(s.rows())==101 and s.labels()[-2:]==['More…',''],s.labels()[-2:]; passed()
+# At ADDON_PAGES replies (500 rows, under ringnav's 512) the list stops at More…, which asks for the rest as a
+# level of its own; a page that fails ends the list at More… too, its rows kept, nothing asked again. (A fresh
+# machine: the mock's memory isn't freed.)
+s=SlskMachine(); s.open(); s.answer('ok','refresh','',SMENU); s.pick(2)
+for k in range(10): s.answer('ok','pages',f'c{k+1}',arts(k))
+assert len(s.rows())==501 and s.labels()[-2:]==['More…',''] and s.requests[-1]==('downloads','c9'); t=len(s.threads); s.advance(2000); assert len(s.threads)==t
+s.pick(500); s.answer('ok','pages','c11',arts(10,30)); assert s.requests[-1]==('downloads','c10')
+s.answer('error','Server down','',[]); assert s.requests[-1]==('downloads','c11') and len(s.rows())==31 and s.labels()[-2:]==['More…','']
+t=len(s.threads); s.advance(2000); assert len(s.threads)==t; passed()
+# Progress rows on the pages after the first have their bars too, drawn as the first page's (the bars once
+# stopped after ADDON_ROWS, 50).
+def progs(k): return [('progress','',f'Album {k*50+i:03}','','',str(10*i)) for i in range(50)]
+s=SlskMachine(); s.open(); s.answer('ok','refresh','',SMENU); s.pick(2); s.answer('ok','pages','c1',progs(0)); s.answer('ok','pages','',progs(1))
+bars=[next((v for v in s.nodes if s.nodes[v]['type']=='view' and s.get(v+O['W_PARENT'])==r),None) for r in s.rows()]
+w=375-2*O['CF_EDGE'] if variant=='ipod' else 350; s.bands.clear(); s.call(address=HOOKS['widget_on_paint_border'][0],args=(bars[60],s.canvas,0,0))
+assert len(bars)==100 and None not in bars and [b[:4] for b in s.bands]==[(0,0,w,8),(0,0,w*100//1000,8)],(bars.count(None),s.bands); passed()
 # Back twice to the menu; Phone Remote shows the QR code page from the add-on's status file.
 m.back(); m.answer('ok','refresh','50',[]); m.back(); m.answer('ok','refresh','',SMENU); assert m.labels()==SLABELS
 code=[[(x*7+y*3)%5<2 for x in range(21)] for y in range(21)]
