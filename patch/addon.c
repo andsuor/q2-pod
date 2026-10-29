@@ -277,39 +277,54 @@ static void stream_poll(app_t *a) {
 }
 
 /* Library update: an app's /tmp/q2-<id>.library, written whole (temp + rename), holds "<seq>"
- * on its first line, then "scan" (Update Local Music) and "import <path>" lines, each path a
- * playlist directly in LIB_DIR. A new seq is checked whole first: any error is its result at once
- * and nothing runs. Then the scan, then stock's Import Playlists (importPlayList, which replaces
- * a playlist of the same name) limited to the files named (addon_m3u_dir), each once
- * library_busy() lets it. The result, "<seq> ok" or "<seq> error <why>", goes to .library.done. One
- * request at a time; a newer seq waits for it. ponytail: a request stalls while its app isn't
- * polled (stopped). The state's only and busy are first, as test/patch.py reads them. */
+ * on its first line (23 bytes at most), then "scan" (Update Local Music), "import <path>" and
+ * "add <path>" lines, each path a playlist directly in LIB_DIR, LIB_MAX bytes in all. A new seq is
+ * checked whole first: any error is its result at once and nothing runs. Then the scan, then
+ * stock's Import Playlists (importPlayList, which replaces a playlist of the same name) limited to
+ * the files named (addon_m3u_dir), each once library_busy() lets it; an add's file only if no
+ * playlist has its name yet. The result, "<seq> ok" or "<seq> error <why>", then "exists <path>"
+ * for each add left alone, goes to .library.done. One request at a time; a newer seq waits for it.
+ * ponytail: a request stalls while its app isn't polled (stopped). The state's only and busy are
+ * first, as test/patch.py reads them. */
+#define LIB_MAX (32 << 10) /* a request's bytes: over 200 lines of 120-byte paths */
 static struct {
     const char *only; /* the import's files, "\n"-ended each, while importPlayList runs; else 0 */
     int busy;         /* in library_poll: a dialog's own loop (a toast's) polls again */
     char seq[24];     /* the request running */
     char done[48];    /* its .done path */
-    char list[2048];  /* its import paths, "\n"-ended each */
-    char raw[4096];   /* the request as read */
-    int state, scan;  /* state: L_IDLE, L_WAIT (to scan), L_SCAN (scanning), L_IMPORT */
+    /* LIB_MAX bytes of heap, taken at the first request and kept: the request as read, then its
+     * paths moved to its start, "\n"-ended each. An add's first '/' is '+' until its name is looked
+     * up, then '-' if a playlist has it (left alone: an exists line). */
+    char *list;
+    int state, scan; /* state: L_IDLE, L_WAIT (to scan), L_SCAN (scanning), L_IMPORT */
 } libup __attribute__((section(".scratch")));
 enum { L_IDLE, L_WAIT, L_SCAN, L_IMPORT };
 
 int ringnav_localclass(int cls); /* navigation.c: load_localclass_list's hook */
 
-/* "<seq> ok" (why 0) or "<seq> error <why>" to libup.done; the request ends. */
+/* "<seq> ok" (why 0) or "<seq> error <why>", then "exists <path>" for each add left alone, to
+ * libup.done (temp + rename); the request ends. */
 static void library_done(const char *why) {
     char line[640];
+    void *f = fopen("/tmp/q2-library.tmp", "wb");
     if (why)
         tk_snprintf(line, sizeof line, "%s error %s\n", libup.seq, why);
     else
         tk_snprintf(line, sizeof line, "%s ok\n", libup.seq);
-    blob_io(libup.done, "/tmp/q2-library.tmp", line, strlen(line), 1);
+    if (f) {
+        fwrite(line, 1, strlen(line), f);
+        for (const char *l = libup.list; *l; l = strstr(l, "\n") + 1)
+            if (*l == '-') fwrite("exists /", 1, 8, f), fwrite(l + 1, 1, strstr(l, "\n") - l, f);
+        fclose(f);
+        rename("/tmp/q2-library.tmp", libup.done);
+    }
     libup.state = L_IDLE;
 }
 
-/* The request's lines after its seq into libup.scan and libup.list; what is wrong, else 0. */
+/* The request's lines after its seq, at s in libup.list: scan into libup.scan, each path moved to
+ * the list (before its own line: it is shorter), an add's marked; what is wrong, else 0. */
 static const char *library_parse(char *s, char *why, unsigned size) {
+    char *w = libup.list;
     for (char *next; *s; s = next) {
         if ((next = strstr(s, "\n")))
             *next++ = 0;
@@ -320,15 +335,16 @@ static const char *library_parse(char *s, char *why, unsigned size) {
             libup.scan = 1;
             continue;
         }
-        if (!tk_str_start_with(s, "import ")) {
+        int add = tk_str_start_with(s, "add ");
+        if (!add && !tk_str_start_with(s, "import ")) {
             tk_snprintf(why, size, "Unknown request: %s", s);
             return why;
         }
-        const char *p = s + 7, *name = p + sizeof LIB_DIR - 1;
-        unsigned k = strlen(p), used = strlen(libup.list);
-        /* stock lists that folder alone, by name: no subfolder, a name before .m3u */
-        if (!tk_str_start_with(p, LIB_DIR) || strstr(name, "/") || strstr(name, "..") ||
-            k < sizeof LIB_DIR + 4 || strcasecmp(p + k - 4, ".m3u")) {
+        const char *p = s + (add ? 4 : 7), *name = p + sizeof LIB_DIR - 1;
+        unsigned k = strlen(p);
+        /* stock lists that folder alone, by name: no subfolder, a name before .m3u (so never ..) */
+        if (!tk_str_start_with(p, LIB_DIR) || strstr(name, "/") || k < sizeof LIB_DIR + 4 ||
+            strcasecmp(p + k - 4, ".m3u")) {
             tk_snprintf(why, size, "Not a playlist in " CARD "/_explaylist_data: %s", p);
             return why;
         }
@@ -336,27 +352,46 @@ static const char *library_parse(char *s, char *why, unsigned size) {
             tk_snprintf(why, size, "Not found: %s", p);
             return why;
         }
-        if (used + k + 2 > sizeof libup.list) return "Request too long";
-        tk_snprintf(libup.list + used, sizeof libup.list - used, "%s\n", p);
+        for (unsigned i = 0; i < k; ++i) w[i] = p[i];
+        if (add) w[0] = '+';
+        w[k] = '\n', w[k + 1] = 0;
+        w += k + 1;
     }
     return 0;
 }
 
-/* After the import, the first listed file whose playlist isn't in Playlists' list (stock reloads
- * it), as why; else 0. Stock stops at a create that fails (a database error, the 100 playlists'
- * cap) and returns as if done. The name is the file's cut at its last dot, as stock's listing
- * (toolsGetDirectoryM3u8) names it. */
-static const char *library_missing(char *why, unsigned size) {
+/* Whether Playlists' list (p_deque_playlist) has a listed line's playlist: the name before its
+ * own line's .m3u, which every listed name ends in, as stock's listing (toolsGetDirectoryM3u8)
+ * cuts the file's name at its last dot. */
+static int playlist_named(const char *name) {
     void *pl = P(p_deque_playlist, 0);
+    unsigned k = (unsigned)(strstr(name, "\n") - name) - 4;
+    for (unsigned i = 0; pl && i < deque_size(pl); ++i) {
+        const char *n = P(deque_at(pl, i), REC_NAME);
+        if (n && strlen(n) == k && tk_str_start_with(name, n)) return 1;
+    }
+    return 0;
+}
+
+/* Each add's name looked up in Playlists' list, loaded: one a playlist has already is left alone
+ * ('-'), the others imported ('/' again); whether any file is left to import. */
+static int library_adds(void) {
+    int any = 0;
+    for (char *l = libup.list; *l; l = strstr(l, "\n") + 1) {
+        if (*l == '+') *l = playlist_named(l + sizeof LIB_DIR - 1) ? '-' : '/';
+        any |= *l == '/';
+    }
+    return any;
+}
+
+/* After the import, the first imported file whose playlist isn't in Playlists' list (stock reloads
+ * it), as why; else 0. Stock stops at a create that fails (a database error, the 100 playlists'
+ * cap) and returns as if done. */
+static const char *library_missing(char *why, unsigned size) {
     for (const char *l = libup.list; *l; l = strstr(l, "\n") + 1) {
-        /* its own line's name less .m3u, which every listed name ends in */
         const char *name = l + sizeof LIB_DIR - 1;
-        unsigned k = (unsigned)(strstr(name, "\n") - name) - 4, found = 0;
-        for (unsigned i = 0; !found && pl && i < deque_size(pl); ++i) {
-            const char *n = P(deque_at(pl, i), REC_NAME);
-            found = n && strlen(n) == k && tk_str_start_with(name, n);
-        }
-        if (found) continue;
+        if (*l != '/' || playlist_named(name)) continue;
+        unsigned k = (unsigned)(strstr(name, "\n") - name) - 4;
         char nm[256];
         tk_snprintf(nm, k + 1 < sizeof nm ? k + 1 : sizeof nm, "%s", name);
         tk_snprintf(why, size, "Couldn't import %s", nm);
@@ -373,11 +408,14 @@ static const char *library_missing(char *why, unsigned size) {
  * p_deque_showlist), and Q2 Pod's own, which keep records read from the database the scan
  * rebuilds. */
 static int library_busy(void) {
-    static const char *const pages[] = { "usbmode_page",      "localclass_page", "playlist_page",
-                                         "playlistedit_page", "folder_page",     "allmusic_page",
-                                         "album_page",        "coverflow_page",  "artistinfo_page",
-                                         "mostplayed_page",   "rated_page",      "longsongs_page",
-                                         "era_page",          "era_albums_page" };
+    static const char *const pages[] = {
+        "usbmode_page",      "localclass_page",     "playlist_page",
+        "playlistedit_page", "folder_page",         "allmusic_page",
+        "album_page",        "albuminfo_page",      "coverflow_page",
+        "artistinfo_page",   "playerjumpinfo_page", "mostplayed_page",
+        "rated_page",        "longsongs_page",      "era_page",
+        "era_albums_page"
+    };
     void *top = window_manager_get_top_window(window_manager());
     if (media_playing() || airplayGetFlag() == 2 || (signed char)bt__recv_pageflag == 2 ||
         scanning() || (top && !tk_strcmp(widget_get_type(top), "dialog")))
@@ -389,21 +427,33 @@ static int library_busy(void) {
 
 static void library_step(app_t *a) {
     if (libup.state == L_IDLE) {
-        char path[48], why[600], *seq = libup.raw + 1, *end;
+        char path[48], head[64], why[600], *seq = head + 1, *end;
         tk_snprintf(path, sizeof path, "/tmp/q2-%s.library", a->id);
-        unsigned n = state_read(path, libup.raw, sizeof libup.raw);
-        if (!n || !(end = strstr(seq, "\n")) || end == seq) return;
-        *end = 0;
-        /* the seq as kept (cut to libseq's size); the one taken last is done already */
-        if (end - seq >= (int)sizeof a->libseq) seq[sizeof a->libseq - 1] = 0;
-        if (!strcmp(seq, a->libseq)) return;
+        /* every poll its seq alone: its line, or the whole file when that has no newline */
+        if (!state_read(path, head, sizeof head) || *seq == '\n') return;
+        if ((end = strstr(seq, "\n"))) *end = 0;
+        if (!strcmp(seq, a->libseq)) return; /* the one taken last is done already */
+        tk_snprintf(libup.done, sizeof libup.done, "%s.done", path);
+        if (strlen(seq) >= sizeof a->libseq) { /* too long to keep: never run, answered once */
+            char line[sizeof head + 24], old[sizeof line];
+            int k = tk_snprintf(line, sizeof line, "%s error Seq too long\n", seq);
+            state_read(libup.done, old, sizeof old);
+            if (strcmp(old + 1, line)) blob_io(libup.done, "/tmp/q2-library.tmp", line, k, 1);
+            return;
+        }
+        if (!libup.list && !(libup.list = calloc(1, LIB_MAX))) return; /* tried again next poll */
         tk_snprintf(a->libseq, sizeof a->libseq, "%s", seq);
         tk_snprintf(libup.seq, sizeof libup.seq, "%s", seq);
-        tk_snprintf(libup.done, sizeof libup.done, "%s.done", path);
-        libup.list[0] = 0, libup.scan = 0;
-        const char *bad = n >= sizeof libup.raw - 2   ? "Request too long"
+        libup.scan = 0;
+        /* then the whole request, its first line passed over (one rewritten since is a newer seq,
+         * taken next) */
+        unsigned n = state_read(path, libup.list, LIB_MAX);
+        char *body = strstr(libup.list + 1, "\n");
+        body = body ? body + 1 : libup.list + n + 1;
+        libup.list[0] = 0; /* no paths until library_parse moves them there */
+        const char *bad = n >= LIB_MAX - 2            ? "Request too long"
                           : access("/tmp/mmc_add", 0) ? "No memory card"
-                                                      : library_parse(end + 1, why, sizeof why);
+                                                      : library_parse(body, why, sizeof why);
         if (bad || (!libup.scan && !libup.list[0])) { /* a seq alone: nothing to do */
             library_done(bad);
             return;
@@ -434,6 +484,10 @@ static void library_step(app_t *a) {
      * (ringnav_playlist_create) and the songs are added to no playlist.
      * ponytail: the import reads every song's tags on the UI thread, as stock's Import row does. */
     ringnav_localclass(0xf00b);
+    if (!library_adds()) { /* only adds, each's playlist there already: nothing is imported */
+        library_done(0);
+        return;
+    }
     libup.only = libup.list;
     int r = importPlayList();
     libup.only = 0;

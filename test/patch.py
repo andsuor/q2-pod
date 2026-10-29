@@ -3258,7 +3258,7 @@ class QueueMachine(Machine):
             else: self.opened.append((page,self.get(b),self.get(b+4))); self.top=self.node('window',page); self.stack.append(self.top)
         elif name=='importPlayList':  # Playlists' list reloaded with the files' names, but a create that failed (-1)
             only=self.text(self.get(payload_syms['libup'])) if self.get(payload_syms['libup']) else None; self.imports.append(only); ret=self.import_ret
-            names=[l.rsplit('/',1)[-1].rsplit('.',1)[0] for l in (only or '').split('\n') if l]
+            names=[l.rsplit('/',1)[-1].rsplit('.',1)[0] for l in (only or '').split('\n') if l.startswith('/')]  # addon_m3u_dir's
             if ret!=-2: self.word(syms['p_deque_playlist'],self.deque([self.song(n) for n in names if n not in self.uncreated]))
         elif name=='toolsGetDirectoryM3u8': self.deqs[b][1]=[self.copy('stSongInfo',r) for r in self.m3u_files]; ret=len(self.m3u_files)
         elif name=='checkFavExist': ret=self.text(self.get(a+O['REC_NAME'])) in self.favs
@@ -11005,7 +11005,8 @@ def busy(c,on):
     else: m.open_pages={c} if on else set()
 seq=100
 for c in ('dialog','album_page','playlist_page','playlistedit_page','coverflow_page','allmusic_page','artistinfo_page','mostplayed_page',
-          'rated_page','longsongs_page','era_page','era_albums_page','radio','airplay','bt'):
+          'rated_page','longsongs_page','era_page','era_albums_page','radio','airplay','bt',
+          'albuminfo_page','playerjumpinfo_page'):  # an album's songs (Albums', an artist's, Search's); Album info and Go to Album
     for body in ('scan\n',f'import {EXP}/Navidrome - Mix.m3u\n'):
         seq+=1; k,n=len(m.imports),len(m.opened); busy(c,1); m.files[LIB]=bytearray(f'{seq}\n{body}'.encode()); m.poll(); m.poll()
         assert (len(m.imports),len(m.opened))==(k,n) and not m.files[DONE].startswith(f'{seq} '.encode()),(c,body,m.files[DONE])
@@ -11045,6 +11046,51 @@ m.m3u_files=recs; m.u.hook_add(UC_HOOK_CODE,lambda u,a,s,x: u.reg_write(UC_MIPS_
 def listing(): dq=m.deque([]); m.call(address=M3U_DIR_CALL,args=(m.string(EXP)-0x12e0,dq,0,0),gap=0); return [m.text(m.get(e+O['REC_NAME'])) for e in m.items(dq)]
 assert listing()==['Navidrome - Mix.m3u','Mine.m3u']
 m.word(payload_syms['libup'],m.string(f'{EXP}/Navidrome - Mix.m3u\n')); assert listing()==['Navidrome - Mix.m3u']; m.word(payload_syms['libup'],0); passed()
+# add and import (R35's request lines): import replaces a playlist of the same name (the app's own, imported
+# before); add imports a name no playlist has yet, else leaves that playlist alone (its file isn't listed for
+# stock's import, which never runs when nothing is left, so its rows stay as they are) and reports it, one
+# "exists <path>" line after the result. Playlists' list is the one loaded for the import (mocked: set here).
+def playlists(*names): m.word(syms['p_deque_playlist'],m.deque([m.song(n) for n in names]))
+def imported(): m.word(payload_syms['libup'],m.string(m.imports[-1])); got=listing(); m.word(payload_syms['libup'],0); return got
+recs=[m.song(n) for n in ('Mine.m3u','New.m3u','Mix.m3u')]
+for r in recs: m.word(r+O['REC_PATH'],m.string(f'{EXP}/'+m.text(m.get(r+O['REC_NAME'])))); m.files[m.text(m.get(r+O['REC_PATH']))]=bytearray(b'#EXTM3U\n')
+m.m3u_files=recs
+playlists('Mine'); k=len(m.imports); m.files[LIB]=bytearray(f'300\nadd {EXP}/New.m3u\n'.encode()); m.poll()
+assert m.files[DONE]==b'300 ok\n' and len(m.imports)==k+1 and imported()==['New.m3u'],(m.files[DONE],m.imports[k:]); passed()
+playlists('Mine'); pl=m.get(syms['p_deque_playlist']); k,t=len(m.imports),len(m.toasts)
+m.files[LIB]=bytearray(f'301\nadd {EXP}/Mine.m3u\n'.encode()); m.poll()
+assert m.files[DONE]==f'301 ok\nexists {EXP}/Mine.m3u\n'.encode() and len(m.imports)==k and len(m.toasts)==t,(m.files[DONE],m.imports[k:])
+assert m.get(syms['p_deque_playlist'])==pl and m.names(pl)==['Mine']; passed()
+playlists('Mine'); m.files[LIB]=bytearray(f'302\nimport {EXP}/Mine.m3u\n'.encode()); m.poll()
+assert m.files[DONE]==b'302 ok\n' and imported()==['Mine.m3u'],m.files[DONE]; passed()
+# A mixed request: the scan, then the import's files (an import, an add whose name is new) in one import, the
+# add whose name a playlist has left alone and reported; the toast as for any import.
+playlists('Mine','Mix'); n,k=len(m.opened),len(m.imports)
+m.files[LIB]=bytearray(f'303\nscan\nimport {EXP}/Mix.m3u\nadd {EXP}/New.m3u\nadd {EXP}/Mine.m3u\n'.encode()); m.poll(); m.poll(); m.poll()
+assert len(m.opened)==n+1 and len(m.imports)==k+1 and imported()==['New.m3u','Mix.m3u'] and m.toasts[-1][3]=='Playlists updated'
+assert m.files[DONE]==f'303 ok\nexists {EXP}/Mine.m3u\n'.encode(),m.files[DONE]; passed()
+# The exists lines follow an error too: a file the import couldn't create.
+playlists('Mine'); m.uncreated={'New'}; m.files[LIB]=bytearray(f'304\nadd {EXP}/New.m3u\nadd {EXP}/Mine.m3u\n'.encode()); m.poll()
+assert m.files[DONE]==f"304 error Couldn't import New\nexists {EXP}/Mine.m3u\n".encode(),m.files[DONE]; m.uncreated=set(); passed()
+# A seq is 23 bytes at most: a longer one is answered "<seq> error Seq too long" and never run, its answer written
+# once (not every poll), and another long seq gets its own even when they start alike. A seq with no newline after
+# it ends at the file's end: a seq alone, ok.
+LONG='9'*24; n=len(m.opened); m.files[LIB]=bytearray(f'{LONG}\nscan\n'.encode()); m.poll()
+assert m.files[DONE]==f'{LONG} error Seq too long\n'.encode() and len(m.opened)==n,m.files[DONE]
+d=m.files[DONE]; m.poll(); assert m.files[DONE] is d
+m.files[LIB]=bytearray(f'{LONG}8\nscan\n'.encode()); m.poll(); assert m.files[DONE]==f'{LONG}8 error Seq too long\n'.encode() and len(m.opened)==n
+m.files[LIB]=bytearray(('8'*23+'\n').encode()); m.poll(); assert m.files[DONE]==('8'*23+' ok\n').encode(),m.files[DONE]
+m.files[LIB]=bytearray(b'305'); m.poll(); assert m.files[DONE]==b'305 ok\n',m.files[DONE]; passed()
+# A request holds up to LIB_MAX (32 KB): 200 imports of 120-byte paths run (about 25 KB, which the old 2 KB of paths
+# refused whole); a longer one is "Request too long", nothing run. A name with an ellipsis is a playlist like any
+# other (only a "/" would leave the folder).
+many=[f'Playlist {i:03} '+'n'*77 for i in range(200)]
+for x in many: m.files[f'{EXP}/{x}.m3u']=bytearray(b'#EXTM3U\n')
+body=''.join(f'import {EXP}/{x}.m3u\n' for x in many); m.files[LIB]=bytearray(f'306\n{body}'.encode()); m.poll()
+assert len(f'{EXP}/{many[0]}.m3u')==120 and len(body)>25000 and m.files[DONE]==b'306 ok\n' and m.imports[-1]==body.replace('import ',''),m.files[DONE]
+k=len(m.imports); m.files[LIB]=bytearray(b'307\n'+b'scan\n'*7000); m.poll(); assert m.files[DONE]==b'307 error Request too long\n' and len(m.imports)==k
+m.files[f'{EXP}/Hello... (Live).m3u']=bytearray(b'#EXTM3U\n'); m.files[LIB]=bytearray(f'308\nimport {EXP}/Hello... (Live).m3u\n'.encode()); m.poll()
+assert m.files[DONE]==b'308 ok\n' and m.imports[-1]==f'{EXP}/Hello... (Live).m3u\n',m.files[DONE]; passed()
 
 # About: FW. Version shows the stock firmware's version again, not the updater tag in demo's
 # literal, and a CFW. Version row follows it. Stock's own row builder (0x4bc274) builds Model and FW.
