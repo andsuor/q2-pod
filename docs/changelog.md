@@ -3,6 +3,7 @@
 - **1.5.8**:
   - Card apps: the firmware lists the card-app features it has in `/tmp/q2-addon.caps`, so apps can use new features and fall back on older firmware.
   - Card apps: Stream mode can play a playlist file of songs on the card, waiting for each streamed song as it arrives, so an app can mix synced and streamed songs. Streaming now takes every format the Q2 plays, not only FLAC and MP3.
+  - Card apps: a progress row shows a bar in Q2 Pod's style, for an app's sync or download progress.
 
 - **1.5.7**:
   - Buttons: a Centre press made while the top button (Back) is held is ignored, so a loose wheel that closes both on one press only goes back.

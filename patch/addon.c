@@ -39,7 +39,9 @@
 #define QR_COL 214 /* the text beside it */
 #define CARD "/mnt/mmc"
 #define CAPS_FILE "/tmp/q2-addon.caps"
-#define ADDON_CAPS "playlist" /* this firmware's card-app features, space-separated */
+#define ADDON_CAPS "playlist progress" /* this firmware's card-app features, space-separated */
+#define PROGRESS_H 8            /* a progress row's bar: a flat strip under its text */
+#define PROGRESS_TRACK 0x3a3a3a /* its unfilled part, dim against the black row */
 
 /* An app found on the card, kept for the life of demo in its slot. present: on the card at the
  * last scan; relaunch: stopped for USB storage, to start again; restart: stopped by Retry (its
@@ -550,7 +552,9 @@ static int req_done(void) {
  * opens the level uri (its context the argument), action sends uri with the context and toasts the
  * reply's message, search opens the T9 box (OK opens "search" for the text), remote opens the QR
  * code, local plays from the card (uri: a song, or a folder to list; context "album": in track
- * order), info does nothing; its position, when set, is the op a held Play/Pause sends.
+ * order), info does nothing; its position, when set, is the op a held Play/Pause sends. progress
+ * (progress_row) draws a bar of its position, permille, under its title and subtitle; a press or a
+ * held Play/Pause does nothing.
  * A reply whose message is "refresh" is asked again every ADDON_LIVE_MS while its level is on top,
  * and redrawn only when it changed, its selected row kept. */
 enum { K_LOAD, K_READY, K_ERROR, K_WAIT }; /* K_WAIT: no socket yet, the app starting */
@@ -577,6 +581,9 @@ static struct {
                  QR code to show at the first answer */
     char term[64], aop[16];
     lv_t *lv; /* ADDON_DEPTH of them, calloc'd */
+    void *bar[ADDON_ROWS]; /* the shown page's progress bars, bars of them, each's pml permille */
+    short pml[ADDON_ROWS];
+    int bars;
 } pg __attribute__((section(".scratch")));
 
 static void qr_open(const char *state, const char *title);
@@ -625,11 +632,29 @@ static void stop_row(int i) {
     page_row_detail(pg.view, i, t, 0, clicked);
 }
 
-/* The top level: its rows, or what it waits for. */
+/* A progress row: page_row_detail's item re-dressed, its title left and subtitle right on one line
+ * over a bar the caption's width, which addon_paint fills from the left. */
+static void progress_row(void *item, int permille) {
+    void *t = widget_get_child(item, 0), *s = widget_get_child(item, 1);
+    int x = I(t, W_X), w = I(t, W_W);
+    widget_use_style(t, "s_scrlabel_white20l");
+    widget_move_resize(t, x, 4, w * 3 / 5, 32);
+    widget_use_style(s, "s_scrlabel_white20r"); /* the style drops the detail's size and grey */
+    widget_set_prop_int(s, "style:normal:font_size", 16);
+    widget_set_prop_int(s, "style:normal:text_color", (int)SPOT_GREY);
+    widget_move_resize(s, x + w * 3 / 5, 4, w - w * 3 / 5, 32);
+    pg.bar[pg.bars] =
+        widget_factory_create_widget(widget_factory(), "view", item, x, 44, w, PROGRESS_H);
+    pg.pml[pg.bars++] = (short)(permille < 0 ? 0 : permille > 1000 ? 1000 : permille);
+}
+
+/* The top level: its rows, or what it waits for. Its bars are forgotten first: page_list destroys
+ * the old rows, so addon_paint never compares a gone widget. */
 static void show(void) {
     lv_t *l = top();
     int n = 0;
     pg.view = pg.edit = 0;
+    pg.bars = 0;
     if (l->state == K_LOAD && !((req.running || req.done) && !pg.act && req.id == l->id)) fetch(l);
     if (l->state == K_LOAD || l->state == K_WAIT) {
         char t[48];
@@ -648,8 +673,12 @@ static void show(void) {
     } else {
         int more = l->f[3][0] != 0;
         pg.view = page_list(pg.page, pg.page, 0, l->title, n = l->n + more, 64);
-        for (int i = 0; i < l->n; ++i)
-            (opens(l, i) ? page_row_detail_into : page_row_detail)(pg.view, i, cell(l, i, 2), cell(l, i, 3), clicked);
+        for (int i = 0; i < l->n; ++i) {
+            void *item = (opens(l, i) ? page_row_detail_into : page_row_detail)(
+                pg.view, i, cell(l, i, 2), cell(l, i, 3), clicked);
+            if (!strcmp(cell(l, i, 0), "progress") && pg.bars < ADDON_ROWS)
+                progress_row(item, atoi(cell(l, i, 5)));
+        }
         if (more) page_row_detail(pg.view, l->n, "More…", "", clicked);
     }
     if (n) ringnav_select(pg.view, l->sel < n ? l->sel : n - 1, n);
@@ -823,7 +852,8 @@ static int go(const void *unused) {
         else if (!strcmp(kind,
                          "search")) { /* peq_ui.c's T9 edit over the title, its keyboard open */
             keep_sel();
-            widget_destroy_children(pg.page), pg.view = 0; /* the box alone, as Spotify's */
+            /* the box alone, as Spotify's; the rows' bars gone with them */
+            widget_destroy_children(pg.page), pg.view = 0, pg.bars = 0;
             pg.edit = edit_create(pg.page, "text", 2, 26);
             widget_set_prop_str(pg.edit, "tips", app()->tips);
             widget_on(pg.edit, EVT_VALUE_CHANGED, searched, 0);
@@ -914,7 +944,7 @@ int addon_hold(void *w) {
     lv_t *l = pg.page && w == pg.page ? top() : 0;
     int i = l && l->state == K_READY && pg.view ? widget_get_prop_int(pg.view, "_ringnav_index", -1)
                                                 : -1;
-    if (i < 0 || i >= l->n || !cell(l, i, 5)[0]) return 0;
+    if (i < 0 || i >= l->n || !cell(l, i, 5)[0] || !strcmp(cell(l, i, 0), "progress")) return 0;
     action(cell(l, i, 5), cell(l, i, 4));
     return 1;
 }
@@ -1038,9 +1068,26 @@ static void plate(void *canvas, int x, int y, int w, int h, unsigned color, unsi
     }
 }
 
-/* ringnav_paint, every widget after stock painted it: the code, dark modules on the white plate, a
- * row's run of them one rectangle, inside a quiet zone of two modules. */
+/* ringnav_paint, every widget after stock painted it: a progress row's bar, a flat rectangle filled
+ * position/1000 of its width from the left, square, with no knob (the accent's light tone in iPod,
+ * stock red in Legacy, as Spotify's bar, over a dim track); and the code, dark modules on the white
+ * plate, a row's run of them one rectangle, inside a quiet zone of two modules. */
 void addon_paint(void *w, void *canvas) {
+    for (int i = 0; pg.page && i < pg.bars; ++i)
+        if (w == pg.bar[i] && P(canvas, CANVAS_LCD)) {
+            unsigned fill = (unsigned)I(P(canvas, CANVAS_LCD), LCD_FILL_COLOR);
+            int bw = I(w, W_W), h = I(w, W_H), x = bw * pg.pml[i] / 1000;
+            canvas_set_fill_color(canvas, rgba(PROGRESS_TRACK, 255));
+            canvas_fill_rect(canvas, 0, 0, bw, h);
+#if IPOD
+            canvas_set_fill_color(canvas, rgba(accent_tone(2), 255));
+#else
+            canvas_set_fill_color(canvas, rgba(STOCK_RED, 255));
+#endif
+            if (x) canvas_fill_rect(canvas, 0, 0, x, h);
+            stock_canvas_set_fill_color(canvas, fill);
+            return;
+        }
     if (!qp.page || w != qp.qr || !P(canvas, CANVAS_LCD) || qp.size < 21) return;
     unsigned fill = (unsigned)I(P(canvas, CANVAS_LCD), LCD_FILL_COLOR);
     int n = qp.size, m = QR_PX / (n + 4), o = (QR_PX - m * n) / 2, digits = (n + 3) / 4;
