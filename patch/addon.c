@@ -330,7 +330,33 @@ static const char *library_parse(char *s, char *why, unsigned size) {
     return 0;
 }
 
-static int scanning(void) { return *(volatile int *)SCAN_THREAD && !*(volatile int *)SCAN_DONE; }
+/* A scan running, or its dialog still open (the user's own Update Local Music too). */
+static int scanning(void) {
+    return (*(volatile int *)SCAN_THREAD && !*(volatile int *)SCAN_DONE) ||
+           navigator_window_is_exist("updatemusic_page");
+}
+
+/* After the import, the first listed file whose playlist isn't in Playlists' list (stock reloads
+ * it), as why; else 0. Stock stops at a create that fails (a database error, the 100 playlists'
+ * cap) and returns as if done. The name is the file's cut at its last dot, as stock's listing
+ * (toolsGetDirectoryM3u8) names it. */
+static const char *library_missing(char *why, unsigned size) {
+    void *pl = P(p_deque_playlist, 0);
+    for (const char *l = libup.list; *l; l = strstr(l, "\n") + 1) {
+        const char *name = l + sizeof LIB_DIR - 1, *dot = strrchr(name, '.');
+        unsigned k = (unsigned)(dot - name), found = 0; /* every listed name ends in .m3u */
+        for (unsigned i = 0; !found && pl && i < deque_size(pl); ++i) {
+            const char *n = P(deque_at(pl, i), REC_NAME);
+            found = n && strlen(n) == k && tk_str_start_with(name, n);
+        }
+        if (found) continue;
+        char nm[256];
+        tk_snprintf(nm, k + 1 < sizeof nm ? k + 1 : sizeof nm, "%s", name);
+        tk_snprintf(why, size, "Couldn't import %s", nm);
+        return why;
+    }
+    return 0;
+}
 
 static void library_poll(app_t *a) {
     if (libup.state == L_IDLE) {
@@ -356,7 +382,7 @@ static void library_poll(app_t *a) {
     }
     if (libup.state == L_WAIT) {
         if (navigator_window_is_exist("usbmode_page") || scanning() || mclGetPlayStatus() == 2)
-            return;
+            return;           /* scanning(): no second dialog over one awaiting its OK */
         libup.state = L_SCAN; /* first: the dialog may run a loop of its own, which polls again */
         int ctx[4] = { 0 };
         navigator_to_with_context("dialog/updatemusic_dialog", ctx);
@@ -365,7 +391,7 @@ static void library_poll(app_t *a) {
     if (libup.state == L_SCAN) {
         /* ponytail: a scan cancelled with the dialog's Back still reports ok (stock keeps no
          * cancel flag). */
-        if (scanning() || navigator_window_is_exist("updatemusic_page")) return;
+        if (scanning()) return;
         if (!libup.list[0]) {
             library_done(0);
             return;
@@ -373,9 +399,12 @@ static void library_poll(app_t *a) {
         libup.state = L_IMPORT;
     }
     if (libup.state != L_IMPORT) return;
-    /* importPlayList reloads p_deque_playlist and p_deque_showlist, which these pages show */
-    static const char *const lists[] = { "usbmode_page", "localclass_page", "playlist_page",
-                                         "folder_page" };
+    /* importPlayList reloads p_deque_playlist and p_deque_showlist, which these pages show (Home's
+     * shortcuts open allmusic_page and album_page alone); a scan writes the database it writes */
+    static const char *const lists[] = { "usbmode_page",   "localclass_page", "playlist_page",
+                                         "folder_page",    "allmusic_page",   "album_page",
+                                         "artistinfo_page" };
+    if (scanning()) return;
     for (unsigned i = 0; i < sizeof lists / sizeof *lists; ++i)
         if (navigator_window_is_exist(lists[i])) return;
     /* Stock's replace finds a same-named playlist in p_deque_playlist alone (checkPlayListByName),
@@ -386,8 +415,10 @@ static void library_poll(app_t *a) {
     libup.only = libup.list;
     int r = importPlayList();
     libup.only = 0;
-    if (r != -2) toast("Playlists updated");
-    library_done(r == -2 ? "No memory card" : 0);
+    char why[300];
+    const char *bad = r == -2 ? "No memory card" : library_missing(why, sizeof why);
+    toast(bad ? bad : "Playlists updated");
+    library_done(bad);
 }
 
 /* Whether path is one of list's "\n"-ended lines. */

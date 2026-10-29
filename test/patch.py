@@ -3180,7 +3180,7 @@ class QueueMachine(Machine):
     def __init__(self,page='allmusic_page',rows=20,queue=3,pos=0,mode=0,cls=0xf001):
         super().__init__()
         self.deqs={}; self.toasts=[]; self.sent=[]; self.picks=[]; self.airplay=0
-        self.imports=[]; self.import_ret=1; self.m3u_files=[]
+        self.imports=[]; self.import_ret=1; self.m3u_files=[]; self.uncreated=set()
         for n in ('_create_deque','deque_init','deque_init_copy','deque_size','deque_at','_deque_push_back',
                   'deque_assign','deque_clear','deque_destroy','deque_pop_back','send@GLIBC_2.0','window_manager_get_input_device_status',
                   'navigator_to','navigator_to_with_context','window_close','widget_on','widget_destroy_children',
@@ -3256,7 +3256,10 @@ class QueueMachine(Machine):
             elif page=='localmusic/playlist_page': self.opened.append((page,b))
             elif page=='localmusic/playlistsmore_page': self.opened.append((page,b))
             else: self.opened.append((page,self.get(b),self.get(b+4))); self.top=self.node('window',page); self.stack.append(self.top)
-        elif name=='importPlayList': self.imports.append(self.text(self.get(payload_syms['libup'])) if self.get(payload_syms['libup']) else None); ret=self.import_ret
+        elif name=='importPlayList':  # Playlists' list reloaded with the files' names, but a create that failed (-1)
+            only=self.text(self.get(payload_syms['libup'])) if self.get(payload_syms['libup']) else None; self.imports.append(only); ret=self.import_ret
+            names=[l.rsplit('/',1)[-1].rsplit('.',1)[0] for l in (only or '').split('\n') if l]
+            if ret!=-2: self.word(syms['p_deque_playlist'],self.deque([self.song(n) for n in names if n not in self.uncreated]))
         elif name=='toolsGetDirectoryM3u8': self.deqs[b][1]=[self.copy('stSongInfo',r) for r in self.m3u_files]; ret=len(self.m3u_files)
         elif name=='checkFavExist': ret=self.text(self.get(a+O['REC_NAME'])) in self.favs
         elif name=='navigator_window_is_exist': ret=self.text(a) in self.open_pages
@@ -10967,6 +10970,21 @@ for seq,body,why in (('9','rescan\n','Unknown request: rescan'),('10','import /m
 assert len(m.imports)==2; m.import_ret=-2; m.files[LIB]=bytearray(f'14\nimport {EXP}/Navidrome - Mix.m3u\n'.encode()); m.poll()
 assert m.files[DONE]==b'14 error No memory card\n'; m.import_ret=1
 m.files.pop('/tmp/mmc_add'); m.files[LIB]=bytearray(b'15\nscan\n'); m.poll(); assert m.files[DONE]==b'15 error No memory card\n'; passed()
+# Neither the import nor the scan starts while a scan runs or its dialog is open (the user's own Update Local
+# Music), so no import races the scan's database writes and no second dialog opens; nor the import under a
+# library page whose list it replaces, Home's Albums shortcut (album_page) as well.
+m.files['/tmp/mmc_add']=bytearray(); m.word(0xa3beac,3); m.word(O['SCAN_THREAD'],0x1234); m.word(O['SCAN_DONE'],0)
+k,n=len(m.imports),len(m.opened); m.files[LIB]=bytearray(f'16\nimport {EXP}/Navidrome - Mix.m3u\n'.encode()); m.poll(); assert len(m.imports)==k
+m.word(O['SCAN_DONE'],1); m.open_pages={'updatemusic_page'}; m.poll(); assert len(m.imports)==k  # its OK not pressed yet
+m.open_pages={'album_page'}; m.poll(); assert len(m.imports)==k
+m.open_pages=set(); m.poll(); assert len(m.imports)==k+1 and m.files[DONE]==b'16 ok\n',m.files[DONE]
+m.open_pages={'updatemusic_page'}; m.files[LIB]=bytearray(b'17\nscan\n'); m.poll(); assert len(m.opened)==n
+m.open_pages=set(); m.poll(); assert len(m.opened)==n+1; m.poll(); assert m.files[DONE]==b'17 ok\n'; passed()
+# A playlist the import couldn't create (stock stops at a create that fails, a database error or the 100
+# playlists' cap, and returns as if done) is no ok: Playlists' list, reloaded, must hold each file's name.
+m.uncreated={'Navidrome - Mix'}; m.files[LIB]=bytearray(f'18\nimport {EXP}/Navidrome - Mix.m3u\n'.encode()); m.poll()
+assert m.files[DONE]==b"18 error Couldn't import Navidrome - Mix\n" and m.toasts[-1][3]=="Couldn't import Navidrome - Mix",(m.files[DONE],m.toasts[-1:])
+m.uncreated=set(); passed()
 # The import's listing (stock importPlayList's toolsGetDirectoryM3u8 call, patched to addon_m3u_dir): stock's
 # whole folder, as its own Import Playlists row has it, unless a card app's request is importing: then only
 # the files it named, so the user's own exports there aren't imported over playlists edited since.
