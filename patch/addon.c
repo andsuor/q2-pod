@@ -39,7 +39,7 @@
 #define QR_COL 214 /* the text beside it */
 #define CARD "/mnt/mmc"
 #define CAPS_FILE "/tmp/q2-addon.caps"
-#define ADDON_CAPS "progress" /* this firmware's card-app features, space-separated */
+#define ADDON_CAPS "progress"   /* this firmware's card-app features, space-separated */
 #define PROGRESS_H 8            /* a progress row's bar: a flat strip under its text */
 #define PROGRESS_TRACK 0x3a3a3a /* its unfilled part, dim against the black row */
 

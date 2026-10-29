@@ -10610,8 +10610,8 @@ for t,want in icons.items():
     icon=m.nodes[rows[t]]['children'][0]; assert m.nodes[icon]['image']==want and not m.nodes[rows[t]].get('name'),(t,m.nodes[icon]['image'])
 passed()
 # Capabilities (addon.c addon_scan): Streaming's first scan leaves /tmp/q2-addon.caps, the card-app features
-# this firmware has as words on one line (progress: the progress row), so an app tells it from older firmware,
-# which has no file; written once, while absent.
+# this firmware has as words on one line (docs/internals.md, Capabilities), so an app tells it from older
+# firmware, which has no file; written once, while absent.
 CAPS='/tmp/q2-addon.caps'
 m=AppMachine(); stream_rows(m); assert m.files[CAPS]==b'progress\n',m.files.get(CAPS)
 m.files[CAPS]=bytearray(b'x\n'); stream_rows(m); assert m.files[CAPS]==b'x\n'; passed()
@@ -10688,16 +10688,16 @@ assert m.requests[-1]==('set','sharing') and m.toasts[-1][3]=='Sharing: While ch
 m.answer('ok','refresh','',SMENU); assert m.requests[-1]==('menu',) and m.labels()==SLABELS; passed()
 # A progress row (kind progress, position permille): its title left and subtitle right on one line over a
 # flat 8 px bar the caption's width, square, no knob: a dim track, then the accent's light tone (iPod) or
-# stock red filled position/1000 of it from the left; 1500 draws full, an unparsable position empty; a press
+# stock red filled position/1000 of it from the left; 1500 draws full, a negative or unparsable one empty; a press
 # does nothing, nor does a held Play/Pause. (A title's % comes escaped, %25, as any Q2SPOT/1 field's.)
-PROG=[('progress','','47%25','112 of 240 songs','','470'),('progress','','Done','','','1500'),('progress','','Queued','','','x')]
+PROG=[('progress','','47%25','112 of 240 songs','','470'),('progress','','Done','','','1500'),('progress','','Queued','','','x'),('progress','','Behind','','','-50')]
 m.pick(2); m.answer('ok','refresh','',PROG); assert m.labels()[:3]==['Downloads','47%','112 of 240 songs'],m.labels()
 def prog_bar(i): return next(v for v in m.nodes if m.nodes[v]['type']=='view' and m.get(v+O['W_PARENT'])==m.rows()[i])
 def prog_paint(i): m.rounded.clear(); m.bands.clear(); m.call(address=HOOKS['widget_on_paint_border'][0],args=(prog_bar(i),m.canvas,0,0)); return [b[:4] for b in m.bands]
 x,w=(O['CF_EDGE'],375-2*O['CF_EDGE']) if variant=='ipod' else (12,350)
 assert cf_geometry(m,prog_bar(0))==(x,44,w,8),cf_geometry(m,prog_bar(0))
 assert prog_paint(0)==[(0,0,w,8),(0,0,w*470//1000,8)] and not m.rounded and m.bands[0][4]==0xff3a3a3a!=m.bands[1][4],(m.bands,m.rounded)
-assert prog_paint(1)==[(0,0,w,8),(0,0,w,8)] and prog_paint(2)==[(0,0,w,8)] and not m.rounded,(m.bands,m.rounded)
+assert prog_paint(1)==[(0,0,w,8),(0,0,w,8)] and prog_paint(2)==prog_paint(3)==[(0,0,w,8)] and not m.rounded,(m.bands,m.rounded)
 asked=len(m.threads); m.pick(0); assert len(m.threads)==asked
 m.top=m.page; m.status=m.alloc(0x200); m.nodes[m.find('scroll_view')]['_ringnav_index']=0; m.press(80); assert m.hold()!=11 and len(m.threads)==asked
 m.back(); m.answer('ok','refresh','',SMENU); passed()
