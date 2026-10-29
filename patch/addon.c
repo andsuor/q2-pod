@@ -302,21 +302,39 @@ enum { L_IDLE, L_WAIT, L_SCAN, L_IMPORT };
 
 int ringnav_localclass(int cls); /* navigation.c: load_localclass_list's hook */
 
+/* line, then (with exists) "exists <path>" for each add left alone, to libup.done through
+ * /tmp/q2-library.tmp. Renamed over only if every write was whole and the close succeeded: a full
+ * /tmp must not publish exists lines cut short, or the app would take a user's same-named
+ * playlist for its own. Otherwise the temp goes. Whether it was published. */
+static int library_write(const char *line, int exists) {
+    unsigned n = strlen(line);
+    void *f = fopen("/tmp/q2-library.tmp", "wb");
+    int ok;
+    if (!f) return 0;
+    ok = fwrite(line, 1, n, f) == n;
+    for (const char *l = libup.list; ok && exists && *l; l = strstr(l, "\n") + 1)
+        if (*l == '-') {
+            unsigned k = strstr(l, "\n") - l;
+            ok = fwrite("exists /", 1, 8, f) == 8 && fwrite(l + 1, 1, k, f) == k;
+        }
+    if (fclose(f)) ok = 0;
+    if (ok && !rename("/tmp/q2-library.tmp", libup.done)) return 1;
+    unlink("/tmp/q2-library.tmp");
+    return 0;
+}
+
 /* "<seq> ok" (why 0) or "<seq> error <why>", then "exists <path>" for each add left alone, to
- * libup.done (temp + rename); the request ends. */
+ * libup.done (temp + rename); the request ends. If that can't be written whole, "<seq> error
+ * Couldn't write the answer" alone; if not even that, nothing (the app keeps waiting). */
 static void library_done(const char *why) {
     char line[640];
-    void *f = fopen("/tmp/q2-library.tmp", "wb");
     if (why)
         tk_snprintf(line, sizeof line, "%s error %s\n", libup.seq, why);
     else
         tk_snprintf(line, sizeof line, "%s ok\n", libup.seq);
-    if (f) {
-        fwrite(line, 1, strlen(line), f);
-        for (const char *l = libup.list; *l; l = strstr(l, "\n") + 1)
-            if (*l == '-') fwrite("exists /", 1, 8, f), fwrite(l + 1, 1, strstr(l, "\n") - l, f);
-        fclose(f);
-        rename("/tmp/q2-library.tmp", libup.done);
+    if (!library_write(line, 1)) {
+        tk_snprintf(line, sizeof line, "%s error Couldn't write the answer\n", libup.seq);
+        library_write(line, 0);
     }
     libup.state = L_IDLE;
 }

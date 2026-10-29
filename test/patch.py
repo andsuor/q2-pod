@@ -9178,6 +9178,7 @@ class BooksMachine(DepthMachine):
         self.handlers[payload_syms['child_exit']]='b:exit'
         self.u.hook_add(UC_HOOK_CODE,self.hook,begin=payload_syms['child_exit'],end=payload_syms['child_exit'])
         self.forked=4242; self.waited=0; self.way=0; self.execs=[]; self.sent=[]
+        self.write_cap=None; self.close_fails=0  # a full disk: a file holds write_cap bytes at most; the next close_fails closes of a .tmp fail
         tramp=int(manifest['patch_symbols']['stock_localmusic_trampoline'],16)
         self.handlers[tramp]='stock_localmusic'; self.u.hook_add(UC_HOOK_CODE,self.hook,begin=tramp,end=tramp)
     def hook(self,u,address,size,unused):
@@ -9206,12 +9207,17 @@ class BooksMachine(DepthMachine):
         elif name in ('fread','fwrite'):
             path,pos=self.handles[d]; f=self.files[path]
             if name=='fread': chunk=bytes(f[pos:pos+b*c]); self.u.mem_write(a,chunk)
-            else: chunk=bytes(u.mem_read(a,b*c)); f[pos:pos+len(chunk)]=chunk
+            else:
+                chunk=bytes(u.mem_read(a,b*c))
+                if self.write_cap is not None: chunk=chunk[:max(0,self.write_cap-pos)]
+                f[pos:pos+len(chunk)]=chunk
             self.handles[d][1]+=len(chunk); ret=len(chunk)//b
         elif name=='fseek':
             h=self.handles[a]; h[1]=signed(b)+(0,h[1],len(self.files[h[0]]))[c]; ret=0
         elif name=='ftell': ret=self.handles[a][1]
-        elif name=='fclose': self.handles.pop(a)
+        elif name=='fclose':
+            path=self.handles.pop(a)[0]
+            if self.close_fails and path.endswith('.tmp'): self.close_fails-=1; ret=-1
         elif name=='access': ret=0 if self.text(a) in self.files or self.text(a) in self.tree else -1
         elif name=='rename': self.files[self.text(b)]=self.files.pop(self.text(a))
         elif name=='unlink': self.files.pop(self.text(a),None)
@@ -11091,6 +11097,16 @@ assert len(f'{EXP}/{many[0]}.m3u')==120 and len(body)>25000 and m.files[DONE]==b
 k=len(m.imports); m.files[LIB]=bytearray(b'307\n'+b'scan\n'*7000); m.poll(); assert m.files[DONE]==b'307 error Request too long\n' and len(m.imports)==k
 m.files[f'{EXP}/Hello... (Live).m3u']=bytearray(b'#EXTM3U\n'); m.files[LIB]=bytearray(f'308\nimport {EXP}/Hello... (Live).m3u\n'.encode()); m.poll()
 assert m.files[DONE]==b'308 ok\n' and m.imports[-1]==f'{EXP}/Hello... (Live).m3u\n',m.files[DONE]; passed()
+# A full /tmp (a write that comes up short, or a close that fails, as a buffered write's flush does): the answer
+# is renamed only whole, else its exists lines could be cut off and the app would take a user's same-named playlist
+# for its own. The temp goes and "<seq> error Couldn't write the answer" is published the same way; if that can't
+# be written either, nothing is published (the old answer stays).
+TMP='/tmp/q2-library.tmp'; cut=b"error Couldn't write the answer\n"
+for seq,cap,closes,want in (('309',40,0,cut),('310',1000,1,cut),('311',10,0,None),('312',1000,2,None)):
+    playlists('Mine'); old=bytes(m.files[DONE]); m.write_cap,m.close_fails=cap,closes
+    m.files[LIB]=bytearray(f'{seq}\nadd {EXP}/New.m3u\nadd {EXP}/Mine.m3u\n'.encode()); m.poll()
+    assert m.files[DONE]==(f'{seq} '.encode()+want if want else old) and TMP not in m.files,(seq,m.files[DONE],TMP in m.files)
+m.write_cap,m.close_fails=None,0; passed()
 
 # About: FW. Version shows the stock firmware's version again, not the updater tag in demo's
 # literal, and a CFW. Version row follows it. Stock's own row builder (0x4bc274) builds Model and FW.
