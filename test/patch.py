@@ -10610,7 +10610,7 @@ for t,want in icons.items():
     icon=m.nodes[rows[t]]['children'][0]; assert m.nodes[icon]['image']==want and not m.nodes[rows[t]].get('name'),(t,m.nodes[icon]['image'])
 passed()
 # Capabilities (addon.c addon_scan): Streaming's first scan leaves /tmp/q2-addon.caps, the card-app features
-# this firmware has as words on one line (playlist: Stream mode plays an .m3u), so an app tells it from older
+# this firmware has as words on one line (docs/internals.md, Capabilities), so an app tells it from older
 # firmware, which has no file; written once, while absent.
 CAPS='/tmp/q2-addon.caps'
 m=AppMachine(); stream_rows(m); assert m.files[CAPS]==b'playlist\n',m.files.get(CAPS)
@@ -10970,6 +10970,13 @@ assert m.names()==['01 - Tears.flac','03 - Corporeal.flac'] and m.files['/tmp/q2
 m.word(syms['mcl_pdeqplaylist'],m.deque([m.song('Other.flac')])); m3u(S1,S2,S3,S4,S6,f'{SYNC}/07.flac'); m.poll(); assert m.names()==['Other.flac']
 m.files['/tmp/q2-deezer.play']=bytearray(b'2200 /tmp/evil.m3u\n'); m.files['/tmp/evil.m3u']=bytearray(f'{S1}\n'.encode()); m.poll(); m.advance(0)
 m.files['/tmp/q2-deezer.play']=bytearray(f'2300 {STR}/../x.m3u\n'.encode()); m.poll(); m.advance(0); assert len(m.plays)==1; passed()
+# A playlist named .M3U in capitals plays too. A long one is queued M3U_BATCH (32) songs a poll, the rest on the
+# polls after, in its order.
+M3U=STR+'/Queue.M3U'; many=[f'{SYNC}/x{i:02} - Song.flac' for i in range(40)]; recs=[card_song(p) for p in many]; m3u(*many)
+m.files['/tmp/q2-deezer.play']=bytearray(f'2400 {M3U}\n'.encode()); m.poll(); m.advance(0)
+assert len(m.plays)==2 and m.play_names==[p.rsplit('/',1)[1] for p in many[:32]],m.play_names
+m.word(syms['mcl_pdeqplaylist'],m.deque(recs[:32])); m.word(O['MCL_POOL'],m.deque(list(range(32)),'int')); m.word(O['MCL_POS'],0)
+m.poll(); assert m.names()==[p.rsplit('/',1)[1] for p in many],m.names(); passed()
 # An album's folder (Organize Files: Artist/Album/07 - Title [id].flac), its row's context "album":
 # its songs listed and played in track order, by name, whatever their dates.
 ALBUM=SONGS+'/Broadcast/Tender Buttons'
