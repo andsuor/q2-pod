@@ -10610,10 +10610,10 @@ for t,want in icons.items():
     icon=m.nodes[rows[t]]['children'][0]; assert m.nodes[icon]['image']==want and not m.nodes[rows[t]].get('name'),(t,m.nodes[icon]['image'])
 passed()
 # Capabilities (addon.c addon_scan): Streaming's first scan leaves /tmp/q2-addon.caps, the card-app features
-# this firmware has as words on one line (none yet), so an app tells it from older firmware, which has no file;
-# written once, while absent.
+# this firmware has as words on one line (progress: the progress row), so an app tells it from older firmware,
+# which has no file; written once, while absent.
 CAPS='/tmp/q2-addon.caps'
-m=AppMachine(); stream_rows(m); assert m.files[CAPS]==b'\n',m.files.get(CAPS)
+m=AppMachine(); stream_rows(m); assert m.files[CAPS]==b'progress\n',m.files.get(CAPS)
 m.files[CAPS]=bytearray(b'x\n'); stream_rows(m); assert m.files[CAPS]==b'x\n'; passed()
 # Stock's Baidu Netdisk row (a Chinese cloud drive; list_baidu's icon) is gone from Streaming, destroyed; its
 # TIDAL row stays first.
@@ -10686,6 +10686,22 @@ assert m.requests[-1]==('menu',) and m.nodes[m.find('scroll_view')]['_ringnav_in
 m.pick(3); m.answer('ok','Sharing: While charging','',[])
 assert m.requests[-1]==('set','sharing') and m.toasts[-1][3]=='Sharing: While charging',(m.requests[-1],m.toasts[-1:])
 m.answer('ok','refresh','',SMENU); assert m.requests[-1]==('menu',) and m.labels()==SLABELS; passed()
+# A progress row (kind progress, position permille): its title left and subtitle right on one line over Now
+# Playing's capsule, the track the full caption width and the played part position/1000 of it, the accent's
+# light tone (iPod) or stock red; a press does nothing, nor does a held Play/Pause, and 1500 draws full. (A
+# title's % comes escaped, %25, as any Q2SPOT/1 field's.)
+PROG=[('progress','','47%25','112 of 240 songs','','470'),('progress','','Done','','','1500')]
+m.pick(2); m.answer('ok','refresh','',PROG); assert m.labels()[:3]==['Downloads','47%','112 of 240 songs'],m.labels()
+row=m.rows()[0]; bar=next(w for w in m.nodes if m.nodes[w]['type']=='view' and m.get(w+O['W_PARENT'])==row)
+x,w=(O['CF_EDGE'],375-2*O['CF_EDGE']) if variant=='ipod' else (12,350); h=cf_geometry(m,bar)[3]
+assert cf_geometry(m,bar)[:3]==(x,44,w) and h in (O['NP_BAR_CLASSIC'],O['NP_BAR_MINIMAL'],O['SPOT_BAR_H']),cf_geometry(m,bar)
+m.rounded.clear(); m.call(address=HOOKS['widget_on_paint_border'][0],args=(bar,m.canvas,0,0))
+assert [r['rect'] for r in m.rounded]==[(0,0,w,h),(0,0,w*470//1000,h)],m.rounded
+full=next(v for v in m.nodes if m.nodes[v]['type']=='view' and m.get(v+O['W_PARENT'])==m.rows()[1])
+m.rounded.clear(); m.call(address=HOOKS['widget_on_paint_border'][0],args=(full,m.canvas,0,0)); assert m.rounded[-1]['rect']==(0,0,w,h)
+asked=len(m.threads); m.pick(0); assert len(m.threads)==asked
+m.top=m.page; m.status=m.alloc(0x200); m.nodes[m.find('scroll_view')]['_ringnav_index']=0; m.press(80); assert m.hold()!=11 and len(m.threads)==asked
+m.back(); m.answer('ok','refresh','',SMENU); passed()
 # Search: the T9 box, its OK opening "search" for the text, escaped.
 m.pick(1); edit=m.find('edit'); assert m.nodes[edit]['tips']=='Search Soulseek'
 m.nodes[edit]['text']='aphex\ttwin'; f,ctx=m.handler(edit,O['EVT_VALUE_CHANGED'])

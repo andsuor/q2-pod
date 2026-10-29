@@ -2,6 +2,7 @@
 
 - **1.5.8**:
   - Card apps: the firmware lists the card-app features it has in `/tmp/q2-addon.caps`, so apps can use new features and fall back on older firmware.
+  - Card apps: a progress row shows a bar in Q2 Pod's style, for an app's sync or download progress.
 
 - **1.5.7**:
   - Buttons: a Centre press made while the top button (Back) is held is ignored, so a loose wheel that closes both on one press only goes back.
