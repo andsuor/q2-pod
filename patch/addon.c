@@ -192,9 +192,19 @@ static int stream_newer(const char *dir, const char *last) {
     return found;
 }
 
+/* A scan running, or its dialog still open (the user's own Update Local Music too). */
+static int scanning(void) {
+    return (*(volatile int *)SCAN_THREAD && !*(volatile int *)SCAN_DONE) ||
+           navigator_window_is_exist("updatemusic_page");
+}
+
 static int stream_start(const void *unused) {
     (void)unused;
     sm.timer = 0;
+    if (scanning()) { /* listing it waits for the scan (stream_poll), which looks again after */
+        sm.seen = 0;
+        return 0;
+    }
     void *songs = app_album_songs(sm.dir);
     unsigned n = deque_size(songs);
     if (n && sm.state == S_WAIT) {
@@ -216,7 +226,9 @@ static void *stream_queue(void) {
 static void stream_poll(app_t *a) {
     char path[48], raw[sizeof sm.play];
     tk_snprintf(path, sizeof path, "/tmp/q2-%s.play", a->id);
-    if (!state_read(path, raw, sizeof raw)) return;
+    /* A folder's listing (stock's toolsLoadDirectory) refills tools_pdeq_directory, which a scan's
+     * thread fills too; and play_folder would open Now Playing over the scan's dialog. */
+    if (scanning() || !state_read(path, raw, sizeof raw)) return;
     if (strcmp(raw, sm.play)) { /* a new session */
         const char *dir = strstr(raw, " ");
         tk_snprintf(sm.play, sizeof sm.play, "%s", raw);
@@ -264,13 +276,12 @@ static void stream_poll(app_t *a) {
     }
 }
 
-/* Library update (F3): an app's /tmp/q2-<id>.library, written whole (temp + rename), holds "<seq>"
+/* Library update: an app's /tmp/q2-<id>.library, written whole (temp + rename), holds "<seq>"
  * on its first line, then "scan" (Update Local Music) and "import <path>" lines, each path a
  * playlist directly in LIB_DIR. A new seq is checked whole first: any error is its result at once
- * and nothing runs. Then the scan, once nothing plays (stock's dialog stops the player), USB
- * storage is off and no scan runs; then stock's Import Playlists (importPlayList, which replaces a
- * playlist of the same name) limited to the files named (addon_m3u_dir), once no Library list it
- * reloads is open. The result, "<seq> ok" or "<seq> error <why>", goes to .library.done. One
+ * and nothing runs. Then the scan, then stock's Import Playlists (importPlayList, which replaces
+ * a playlist of the same name) limited to the files named (addon_m3u_dir), each once
+ * library_busy() lets it. The result, "<seq> ok" or "<seq> error <why>", goes to .library.done. One
  * request at a time; a newer seq waits for it. ponytail: a request stalls while its app isn't
  * polled (stopped). The state's only and busy are first, as test/patch.py reads them. */
 static struct {
@@ -331,12 +342,6 @@ static const char *library_parse(char *s, char *why, unsigned size) {
     return 0;
 }
 
-/* A scan running, or its dialog still open (the user's own Update Local Music too). */
-static int scanning(void) {
-    return (*(volatile int *)SCAN_THREAD && !*(volatile int *)SCAN_DONE) ||
-           navigator_window_is_exist("updatemusic_page");
-}
-
 /* After the import, the first listed file whose playlist isn't in Playlists' list (stock reloads
  * it), as why; else 0. Stock stops at a create that fails (a database error, the 100 playlists'
  * cap) and returns as if done. The name is the file's cut at its last dot, as stock's listing
@@ -360,6 +365,23 @@ static const char *library_missing(char *why, unsigned size) {
     return 0;
 }
 
+/* Whether the scan or the import must wait: something plays from any source (stock's scan dialog
+ * stops the player), a scan runs or its dialog is open, a dialog is on top (this poll runs inside
+ * its own loop, a toast's too: no request starts there), or a page is open whose list either
+ * rebuilds (the import reloads p_deque_playlist and p_deque_showlist; the scan the database). */
+static int library_busy(void) {
+    static const char *const pages[] = {
+        "usbmode_page",  "localclass_page", "playlist_page",  "playlistedit_page", "folder_page",
+        "allmusic_page", "album_page",      "coverflow_page", "artistinfo_page"
+    };
+    void *top = window_manager_get_top_window(window_manager());
+    if (media_playing() || scanning() || (top && !tk_strcmp(widget_get_type(top), "dialog")))
+        return 1;
+    for (unsigned i = 0; i < sizeof pages / sizeof *pages; ++i)
+        if (navigator_window_is_exist(pages[i])) return 1;
+    return 0;
+}
+
 static void library_step(app_t *a) {
     if (libup.state == L_IDLE) {
         char path[48], why[600], *seq = libup.raw + 1, *end;
@@ -368,7 +390,7 @@ static void library_step(app_t *a) {
         if (!n || !(end = strstr(seq, "\n")) || end == seq) return;
         *end = 0;
         if (end - seq >= (int)sizeof a->libseq) seq[sizeof a->libseq - 1] = 0; /* as kept */
-        if (!strcmp(seq, a->libseq)) return; /* done already */
+        if (!strcmp(seq, a->libseq)) return;                                   /* done already */
         tk_snprintf(a->libseq, sizeof a->libseq, "%s", seq);
         tk_snprintf(libup.seq, sizeof libup.seq, "%s", seq);
         tk_snprintf(libup.done, sizeof libup.done, "%s.done", path);
@@ -376,15 +398,14 @@ static void library_step(app_t *a) {
         const char *bad = n >= sizeof libup.raw - 2   ? "Request too long"
                           : access("/tmp/mmc_add", 0) ? "No memory card"
                                                       : library_parse(end + 1, why, sizeof why);
-        if (bad) {
+        if (bad || (!libup.scan && !libup.list[0])) { /* a seq alone: nothing to do */
             library_done(bad);
             return;
         }
         libup.state = libup.scan ? L_WAIT : L_IMPORT;
     }
     if (libup.state == L_WAIT) {
-        if (navigator_window_is_exist("usbmode_page") || scanning() || mclGetPlayStatus() == 2)
-            return;           /* scanning(): no second dialog over one awaiting its OK */
+        if (library_busy()) return;
         libup.state = L_SCAN; /* first: the dialog may run a loop of its own, which polls again */
         int ctx[4] = { 0 };
         navigator_to_with_context("dialog/updatemusic_dialog", ctx);
@@ -401,14 +422,7 @@ static void library_step(app_t *a) {
         libup.state = L_IMPORT;
     }
     if (libup.state != L_IMPORT) return;
-    /* importPlayList reloads p_deque_playlist and p_deque_showlist, which these pages show (Home's
-     * shortcuts open allmusic_page and album_page alone); a scan writes the database it writes */
-    static const char *const lists[] = { "usbmode_page",   "localclass_page", "playlist_page",
-                                         "folder_page",    "allmusic_page",   "album_page",
-                                         "artistinfo_page" };
-    if (scanning()) return;
-    for (unsigned i = 0; i < sizeof lists / sizeof *lists; ++i)
-        if (navigator_window_is_exist(lists[i])) return;
+    if (library_busy()) return;
     /* Stock's replace finds a same-named playlist in p_deque_playlist alone (checkPlayListByName),
      * empty until Library → Playlists first loads it; otherwise the create fails on the name
      * (ringnav_playlist_create) and the songs are added to no playlist.
