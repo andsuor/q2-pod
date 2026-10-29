@@ -272,9 +272,10 @@ static void stream_poll(app_t *a) {
  * playlist of the same name) limited to the files named (addon_m3u_dir), once no Library list it
  * reloads is open. The result, "<seq> ok" or "<seq> error <why>", goes to .library.done. One
  * request at a time; a newer seq waits for it. ponytail: a request stalls while its app isn't
- * polled (stopped). The state's only: is first, as test/patch.py reads it. */
+ * polled (stopped). The state's only and busy are first, as test/patch.py reads them. */
 static struct {
     const char *only; /* the import's files, "\n"-ended each, while importPlayList runs; else 0 */
+    int busy;         /* in library_poll: a dialog's own loop (a toast's) polls again */
     char seq[24];     /* the request running */
     char done[48];    /* its .done path */
     char list[2048];  /* its import paths, "\n"-ended each */
@@ -343,8 +344,9 @@ static int scanning(void) {
 static const char *library_missing(char *why, unsigned size) {
     void *pl = P(p_deque_playlist, 0);
     for (const char *l = libup.list; *l; l = strstr(l, "\n") + 1) {
-        const char *name = l + sizeof LIB_DIR - 1, *dot = strrchr(name, '.');
-        unsigned k = (unsigned)(dot - name), found = 0; /* every listed name ends in .m3u */
+        /* its own line's name less .m3u, which every listed name ends in */
+        const char *name = l + sizeof LIB_DIR - 1;
+        unsigned k = (unsigned)(strstr(name, "\n") - name) - 4, found = 0;
         for (unsigned i = 0; !found && pl && i < deque_size(pl); ++i) {
             const char *n = P(deque_at(pl, i), REC_NAME);
             found = n && strlen(n) == k && tk_str_start_with(name, n);
@@ -358,7 +360,7 @@ static const char *library_missing(char *why, unsigned size) {
     return 0;
 }
 
-static void library_poll(app_t *a) {
+static void library_step(app_t *a) {
     if (libup.state == L_IDLE) {
         char path[48], why[600], *seq = libup.raw + 1, *end;
         tk_snprintf(path, sizeof path, "/tmp/q2-%s.library", a->id);
@@ -417,8 +419,17 @@ static void library_poll(app_t *a) {
     libup.only = 0;
     char why[300];
     const char *bad = r == -2 ? "No memory card" : library_missing(why, sizeof why);
+    library_done(bad); /* before the toast, whose dialog runs a loop of its own */
     toast(bad ? bad : "Playlists updated");
-    library_done(bad);
+}
+
+/* poll_one's, after stream_poll. A stock dialog it opens (Update Local Music, a toast) runs a loop
+ * of its own, which polls again: that nested poll does nothing, so no request runs twice. */
+static void library_poll(app_t *a) {
+    if (libup.busy) return;
+    libup.busy = 1;
+    library_step(a);
+    libup.busy = 0;
 }
 
 /* Whether path is one of list's "\n"-ended lines. */
