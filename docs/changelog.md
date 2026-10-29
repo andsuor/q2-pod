@@ -2,6 +2,7 @@
 
 - **1.5.8**:
   - Card apps: the firmware lists the card-app features it has in `/tmp/q2-addon.caps`, so apps can use new features and fall back on older firmware.
+  - Card apps: an app can ask the Q2 to update the library and import its playlists after a sync. The Q2 waits until nothing is playing, shows the usual Update Local Music progress, and replaces a playlist of the same name instead of adding a copy.
 
 - **1.5.7**:
   - Buttons: a Centre press made while the top button (Back) is held is ignored, so a loose wheel that closes both on one press only goes back.

@@ -3180,13 +3180,15 @@ class QueueMachine(Machine):
     def __init__(self,page='allmusic_page',rows=20,queue=3,pos=0,mode=0,cls=0xf001):
         super().__init__()
         self.deqs={}; self.toasts=[]; self.sent=[]; self.picks=[]; self.airplay=0
+        self.imports=[]; self.import_ret=1; self.m3u_files=[]
         for n in ('_create_deque','deque_init','deque_init_copy','deque_size','deque_at','_deque_push_back',
                   'deque_assign','deque_clear','deque_destroy','deque_pop_back','send@GLIBC_2.0','window_manager_get_input_device_status',
                   'navigator_to','navigator_to_with_context','window_close','widget_on','widget_destroy_children',
                   'getMusicByAlbum','getMusicByAlbumAndSonger','getMusicByAlbumAndAlbumSonger','toolsLoadDirectory',
                   'getMusicBySonger','getMusicByAlbumArtist','getMusicByComposer','getMusicByGenre',
                   'getMusicByAlbumAndComposer','getMusicByAlbumAndGenre','checkFavExist','navigator_window_is_exist',
-                  'mcl_shuffle_pick','airplayGetFlag','calloc@GLIBC_2.0','fopen@GLIBC_2.2','qsort@GLIBC_2.0'): self.handlers[syms[n]]='q:'+n
+                  'mcl_shuffle_pick','airplayGetFlag','calloc@GLIBC_2.0','fopen@GLIBC_2.2','qsort@GLIBC_2.0',
+                  'importPlayList','toolsGetDirectoryM3u8'): self.handlers[syms[n]]='q:'+n
         self.favs=set(); self.open_pages=set(); self.opened=[]
         self.handlers.pop(syms['mclLoadPlayList'])
         self.mock('strlen@GLIBC_2.0','snprintf@GLIBC_2.0'); self.handlers[syms['strcmp@GLIBC_2.0']]='tk_strcmp'
@@ -3254,6 +3256,8 @@ class QueueMachine(Machine):
             elif page=='localmusic/playlist_page': self.opened.append((page,b))
             elif page=='localmusic/playlistsmore_page': self.opened.append((page,b))
             else: self.opened.append((page,self.get(b),self.get(b+4))); self.top=self.node('window',page); self.stack.append(self.top)
+        elif name=='importPlayList': self.imports.append(self.text(self.get(payload_syms['libup'])) if self.get(payload_syms['libup']) else None); ret=self.import_ret
+        elif name=='toolsGetDirectoryM3u8': self.deqs[b][1]=[self.copy('stSongInfo',r) for r in self.m3u_files]; ret=len(self.m3u_files)
         elif name=='checkFavExist': ret=self.text(self.get(a+O['REC_NAME'])) in self.favs
         elif name=='navigator_window_is_exist': ret=self.text(a) in self.open_pages
         elif name=='window_close': self.stack.remove(a); self.top=self.stack[-1]
@@ -10610,10 +10614,10 @@ for t,want in icons.items():
     icon=m.nodes[rows[t]]['children'][0]; assert m.nodes[icon]['image']==want and not m.nodes[rows[t]].get('name'),(t,m.nodes[icon]['image'])
 passed()
 # Capabilities (addon.c addon_scan): Streaming's first scan leaves /tmp/q2-addon.caps, the card-app features
-# this firmware has as words on one line (none yet), so an app tells it from older firmware, which has no file;
-# written once, while absent.
+# this firmware has as words on one line (library: the library update request), so an app tells it from older
+# firmware, which has no file; written once, while absent.
 CAPS='/tmp/q2-addon.caps'
-m=AppMachine(); stream_rows(m); assert m.files[CAPS]==b'\n',m.files.get(CAPS)
+m=AppMachine(); stream_rows(m); assert m.files[CAPS]==b'library\n',m.files.get(CAPS)
 m.files[CAPS]=bytearray(b'x\n'); stream_rows(m); assert m.files[CAPS]==b'x\n'; passed()
 # Stock's Baidu Netdisk row (a Chinese cloud drive; list_baidu's icon) is gone from Streaming, destroyed; its
 # TIDAL row stays first.
@@ -10934,6 +10938,45 @@ m.plays=[]; m.pick(0); assert [p[2:4] for p in m.plays]==[(1,0xf001)] and m.play
 # Stop Streaming Services, USB storage and Rockbox stop it as the other apps (it writes to the card).
 m.close(); m.files[DZPID]=bytearray(b'7'); m.systems=[]; run(m,'addon_stop')
 assert 'kill $(cat /tmp/q2-deezer) 2>/dev/null || rm -f /tmp/q2-deezer' in m.systems,m.systems; passed()
+# Library update (addon.c library_poll): the app's /tmp/q2-<id>.library, "<seq>" then scan and import lines,
+# runs stock's Update Local Music (its dialog, which stops the player: not while one plays), then stock's
+# playlist import (which replaces a same-named playlist) for the listed files alone, once no Library list is
+# open under it; each seq once, its result in .library.done.
+LIB,DONE,EXP='/tmp/q2-deezer.library','/tmp/q2-deezer.library.done','/mnt/mmc/_explaylist_data'
+m=DeezerMachine(); m.open(); m.files[DZPID]=bytearray(b'4242'); m.files['/tmp/mmc_add']=bytearray()
+m.handlers.pop(syms['mclGetPlayStatus'],None); m.word(0xa3beac,2); m.files[f'{EXP}/Navidrome - Mix.m3u']=bytearray(b'#EXTM3U\n')
+m.loads=[]; m.u.hook_add(UC_HOOK_CODE,lambda u,a,s,x: (m.loads.append((u.reg_read(REGS[0]),len(m.imports))),m.returns(0)),
+                         begin=(lc:=int(manifest['patch_symbols']['stock_localclass_trampoline'],16)),end=lc)
+m.files[LIB]=bytearray(f'7\nscan\nimport {EXP}/Navidrome - Mix.m3u\n'.encode()); m.poll()
+assert not [o for o in m.opened if o[0]=='dialog/updatemusic_dialog'] and DONE not in m.files  # playing: waits
+m.word(0xa3beac,3); m.poll(); assert [o for o in m.opened if o[0]=='dialog/updatemusic_dialog'][-1]==('dialog/updatemusic_dialog',0,0)
+m.word(O['SCAN_THREAD'],0x1234); m.word(O['SCAN_DONE'],0); m.open_pages={'updatemusic_page'}; m.poll(); assert not m.imports
+m.word(O['SCAN_DONE'],1); m.open_pages={'playlist_page'}; m.poll(); assert not m.imports  # its list is reloaded: waits
+m.open_pages=set(); m.poll(); assert m.imports==[f'{EXP}/Navidrome - Mix.m3u\n'] and m.files[DONE]==b'7 ok\n',(m.imports,m.files.get(DONE))
+assert m.loads==[(0xf00b,0)],m.loads  # Playlists' list loaded first: stock's replace looks a name up there alone
+assert m.get(payload_syms['libup'])==0; m.poll(); assert len(m.imports)==1; passed()
+# Import alone: no scan, the player left as it is.
+m.word(0xa3beac,2); n=len(m.opened); m.files[LIB]=bytearray(f'8\nimport {EXP}/Navidrome - Mix.m3u\n'.encode()); m.poll()
+assert len(m.opened)==n and len(m.imports)==2 and m.files[DONE]==b'8 ok\n' and m.toasts[-1][3]=='Playlists updated',m.toasts[-1:]; passed()
+# Errors, each at once and nothing run: a line it doesn't know, a file outside the folder or not an .m3u, one
+# not there, no card.
+for seq,body,why in (('9','rescan\n','Unknown request: rescan'),('10','import /mnt/mmc/Music/x.m3u\n','Not a playlist in /mnt/mmc/_explaylist_data: /mnt/mmc/Music/x.m3u'),
+                     ('11',f'import {EXP}/../x.m3u\n',f'Not a playlist in /mnt/mmc/_explaylist_data: {EXP}/../x.m3u'),('12',f'import {EXP}/a/b.m3u\n',f'Not a playlist in /mnt/mmc/_explaylist_data: {EXP}/a/b.m3u'),
+                     ('13',f'import {EXP}/Gone.m3u\n',f'Not found: {EXP}/Gone.m3u')):
+    m.files[LIB]=bytearray(f'{seq}\n{body}'.encode()); m.poll(); assert m.files[DONE]==f'{seq} error {why}\n'.encode(),(seq,m.files[DONE]); passed()
+assert len(m.imports)==2; m.import_ret=-2; m.files[LIB]=bytearray(f'14\nimport {EXP}/Navidrome - Mix.m3u\n'.encode()); m.poll()
+assert m.files[DONE]==b'14 error No memory card\n'; m.import_ret=1
+m.files.pop('/tmp/mmc_add'); m.files[LIB]=bytearray(b'15\nscan\n'); m.poll(); assert m.files[DONE]==b'15 error No memory card\n'; passed()
+# The import's listing (stock importPlayList's toolsGetDirectoryM3u8 call, patched to addon_m3u_dir): stock's
+# whole folder, as its own Import Playlists row has it, unless a card app's request is importing: then only
+# the files it named, so the user's own exports there aren't imported over playlists edited since.
+from build import M3U_DIR_CALL
+recs=[m.song(n) for n in ('Navidrome - Mix.m3u','Mine.m3u')]
+for r in recs: m.word(r+O['REC_PATH'],m.string(f'{EXP}/'+m.text(m.get(r+O['REC_NAME']))))
+m.m3u_files=recs; m.u.hook_add(UC_HOOK_CODE,lambda u,a,s,x: u.reg_write(UC_MIPS_REG_PC,0x1000000),begin=M3U_DIR_CALL+8,end=M3U_DIR_CALL+8)
+def listing(): dq=m.deque([]); m.call(address=M3U_DIR_CALL,args=(m.string(EXP)-0x12e0,dq,0,0),gap=0); return [m.text(m.get(e+O['REC_NAME'])) for e in m.items(dq)]
+assert listing()==['Navidrome - Mix.m3u','Mine.m3u']
+m.word(payload_syms['libup'],m.string(f'{EXP}/Navidrome - Mix.m3u\n')); assert listing()==['Navidrome - Mix.m3u']; m.word(payload_syms['libup'],0); passed()
 
 # About: FW. Version shows the stock firmware's version again, not the updater tag in demo's
 # literal, and a CFW. Version row follows it. Stock's own row builder (0x4bc274) builds Model and FW.

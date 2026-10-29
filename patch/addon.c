@@ -16,8 +16,9 @@
  * (hold=1: files moving, a phone using its page) and carries its web page's QR code, address and
  * PIN, which qr_open's page draws. A TERM to the loop's pid asks it to end. An app that plays as
  * well (q2-deezer's Stream mode) names a card folder of songs in /tmp/q2-<id>.play, which
- * stream_poll plays as it fills. Its features are words in /tmp/q2-addon.caps, written at
- * Streaming's first scan. */
+ * stream_poll plays as it fills. It asks for Update Local Music and its playlists' import in
+ * /tmp/q2-<id>.library (library_poll), the result in .library.done. Its features are words in
+ * /tmp/q2-addon.caps, written at Streaming's first scan. */
 #include "offsets.inc"
 #include "peq.h"
 #include "playback.h"
@@ -39,13 +40,15 @@
 #define QR_COL 214 /* the text beside it */
 #define CARD "/mnt/mmc"
 #define CAPS_FILE "/tmp/q2-addon.caps"
-#define ADDON_CAPS "" /* this firmware's card-app features, space-separated */
+#define LIB_DIR CARD "/_explaylist_data/"
+#define ADDON_CAPS "library" /* this firmware's card-app features, space-separated */
 
 /* An app found on the card, kept for the life of demo in its slot. present: on the card at the
  * last scan; relaunch: stopped for USB storage, to start again; restart: stopped by Retry (its
  * socket gone), to start again once its loop is gone. */
 typedef struct {
     char id[APP_ID], name[32], tips[32], bin[48], run[48], pid[32], state[40], browse[48], icon[56];
+    char libseq[24]; /* its last library request taken (library_poll) */
     int qr, present, launched, hold, relaunch, restart;
     unsigned polled, launch_at, restart_at;
 } app_t;
@@ -261,6 +264,158 @@ static void stream_poll(app_t *a) {
     }
 }
 
+/* Library update (F3): an app's /tmp/q2-<id>.library, written whole (temp + rename), holds "<seq>"
+ * on its first line, then "scan" (Update Local Music) and "import <path>" lines, each path a
+ * playlist directly in LIB_DIR. A new seq is checked whole first: any error is its result at once
+ * and nothing runs. Then the scan, once nothing plays (stock's dialog stops the player), USB
+ * storage is off and no scan runs; then stock's Import Playlists (importPlayList, which replaces a
+ * playlist of the same name) limited to the files named (addon_m3u_dir), once no Library list it
+ * reloads is open. The result, "<seq> ok" or "<seq> error <why>", goes to .library.done. One
+ * request at a time; a newer seq waits for it. ponytail: a request stalls while its app isn't
+ * polled (stopped). The state's only: is first, as test/patch.py reads it. */
+static struct {
+    const char *only; /* the import's files, "\n"-ended each, while importPlayList runs; else 0 */
+    char seq[24];     /* the request running */
+    char done[48];    /* its .done path */
+    char list[2048];  /* its import paths, "\n"-ended each */
+    char raw[4096];   /* the request as read */
+    int state, scan;  /* state: L_IDLE, L_WAIT (to scan), L_SCAN (scanning), L_IMPORT */
+} libup __attribute__((section(".scratch")));
+enum { L_IDLE, L_WAIT, L_SCAN, L_IMPORT };
+
+int ringnav_localclass(int cls); /* navigation.c: load_localclass_list's hook */
+
+/* "<seq> ok" (why 0) or "<seq> error <why>" to libup.done; the request ends. */
+static void library_done(const char *why) {
+    char line[640];
+    if (why)
+        tk_snprintf(line, sizeof line, "%s error %s\n", libup.seq, why);
+    else
+        tk_snprintf(line, sizeof line, "%s ok\n", libup.seq);
+    blob_io(libup.done, "/tmp/q2-library.tmp", line, strlen(line), 1);
+    libup.state = L_IDLE;
+}
+
+/* The request's lines after its seq into libup.scan and libup.list; what is wrong, else 0. */
+static const char *library_parse(char *s, char *why, unsigned size) {
+    for (char *next; *s; s = next) {
+        if ((next = strstr(s, "\n")))
+            *next++ = 0;
+        else
+            next = s + strlen(s);
+        if (!*s) continue;
+        if (!strcmp(s, "scan")) {
+            libup.scan = 1;
+            continue;
+        }
+        if (!tk_str_start_with(s, "import ")) {
+            tk_snprintf(why, size, "Unknown request: %s", s);
+            return why;
+        }
+        const char *p = s + 7, *name = p + sizeof LIB_DIR - 1;
+        unsigned k = strlen(p), used = strlen(libup.list);
+        /* stock lists that folder alone, by name: no subfolder, a name before .m3u */
+        if (!tk_str_start_with(p, LIB_DIR) || strstr(name, "/") || strstr(name, "..") ||
+            k < sizeof LIB_DIR + 4 || strcasecmp(p + k - 4, ".m3u")) {
+            tk_snprintf(why, size, "Not a playlist in " CARD "/_explaylist_data: %s", p);
+            return why;
+        }
+        if (access(p, 0)) {
+            tk_snprintf(why, size, "Not found: %s", p);
+            return why;
+        }
+        if (used + k + 2 > sizeof libup.list) return "Request too long";
+        tk_snprintf(libup.list + used, sizeof libup.list - used, "%s\n", p);
+    }
+    return 0;
+}
+
+static int scanning(void) { return *(volatile int *)SCAN_THREAD && !*(volatile int *)SCAN_DONE; }
+
+static void library_poll(app_t *a) {
+    if (libup.state == L_IDLE) {
+        char path[48], why[600], *seq = libup.raw + 1, *end;
+        tk_snprintf(path, sizeof path, "/tmp/q2-%s.library", a->id);
+        unsigned n = state_read(path, libup.raw, sizeof libup.raw);
+        if (!n || !(end = strstr(seq, "\n")) || end == seq) return;
+        *end = 0;
+        if (end - seq >= (int)sizeof a->libseq) seq[sizeof a->libseq - 1] = 0; /* as kept */
+        if (!strcmp(seq, a->libseq)) return; /* done already */
+        tk_snprintf(a->libseq, sizeof a->libseq, "%s", seq);
+        tk_snprintf(libup.seq, sizeof libup.seq, "%s", seq);
+        tk_snprintf(libup.done, sizeof libup.done, "%s.done", path);
+        libup.list[0] = 0, libup.scan = 0;
+        const char *bad = n >= sizeof libup.raw - 2   ? "Request too long"
+                          : access("/tmp/mmc_add", 0) ? "No memory card"
+                                                      : library_parse(end + 1, why, sizeof why);
+        if (bad) {
+            library_done(bad);
+            return;
+        }
+        libup.state = libup.scan ? L_WAIT : L_IMPORT;
+    }
+    if (libup.state == L_WAIT) {
+        if (navigator_window_is_exist("usbmode_page") || scanning() || mclGetPlayStatus() == 2)
+            return;
+        libup.state = L_SCAN; /* first: the dialog may run a loop of its own, which polls again */
+        int ctx[4] = { 0 };
+        navigator_to_with_context("dialog/updatemusic_dialog", ctx);
+        return;
+    }
+    if (libup.state == L_SCAN) {
+        /* ponytail: a scan cancelled with the dialog's Back still reports ok (stock keeps no
+         * cancel flag). */
+        if (scanning() || navigator_window_is_exist("updatemusic_page")) return;
+        if (!libup.list[0]) {
+            library_done(0);
+            return;
+        }
+        libup.state = L_IMPORT;
+    }
+    if (libup.state != L_IMPORT) return;
+    /* importPlayList reloads p_deque_playlist and p_deque_showlist, which these pages show */
+    static const char *const lists[] = { "usbmode_page", "localclass_page", "playlist_page",
+                                         "folder_page" };
+    for (unsigned i = 0; i < sizeof lists / sizeof *lists; ++i)
+        if (navigator_window_is_exist(lists[i])) return;
+    /* Stock's replace finds a same-named playlist in p_deque_playlist alone (checkPlayListByName),
+     * empty until Library → Playlists first loads it; otherwise the create fails on the name
+     * (ringnav_playlist_create) and the songs are added to no playlist.
+     * ponytail: the import reads every song's tags on the UI thread, as stock's Import row does. */
+    ringnav_localclass(0xf00b);
+    libup.only = libup.list;
+    int r = importPlayList();
+    libup.only = 0;
+    if (r != -2) toast("Playlists updated");
+    library_done(r == -2 ? "No memory card" : 0);
+}
+
+/* Whether path is one of list's "\n"-ended lines. */
+static int listed(const char *list, const char *path) {
+    unsigned k = strlen(path);
+    for (const char *l = list; *l; l = strstr(l, "\n") + 1)
+        if (tk_str_start_with(l, path) && l[k] == '\n') return 1;
+    return 0;
+}
+
+/* M3U_DIR_CALL: importPlayList's listing of LIB_DIR's playlists; while a card app's request
+ * imports, only the files it named, so the user's own exports there aren't imported again over
+ * playlists edited since. Stock's own Import Playlists row gets the whole folder. */
+int addon_m3u_dir(const char *dir, void *dq) {
+    int n = toolsGetDirectoryM3u8(dir, dq);
+    if (!libup.only) return n;
+    void *kept = _create_deque("stSongInfo");
+    deque_init(kept);
+    for (unsigned i = 0; i < deque_size(dq); ++i) {
+        void *r = deque_at(dq, i);
+        const char *p = P(r, REC_PATH);
+        if (p && listed(libup.only, p)) _deque_push_back(kept, r);
+    }
+    deque_assign(dq, kept);
+    deque_destroy(kept);
+    return (int)deque_size(dq);
+}
+
 /* ringnav_sleep, every UI loop pass, paced to ADDON_POLL_MS once its row started it: standby and
  * auto power-off held while the app asks (hold=1), as Spotify's poll does while it plays; the
  * screen still turns off. An app that stopped by itself (idle, or from the phone) is let go, and
@@ -283,6 +438,7 @@ static void poll_one(app_t *a) {
     a->hold = number(raw, "hold") == 1;
     if (a->hold) reset_poweroptions_timer(1, 1, 0); /* standby, auto power-off; not the screen's */
     stream_poll(a);
+    library_poll(a);
     if (access(a->pid, 0) && now - a->launch_at > ADDON_START_MS) a->launched = a->hold = 0;
 }
 
