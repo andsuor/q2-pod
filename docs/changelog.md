@@ -1,5 +1,8 @@
 # Changelog
 
+- **1.5.8**:
+  - Card apps: the firmware lists the card-app features it has in `/tmp/q2-addon.caps`, so apps can use new features and fall back on older firmware.
+
 - **1.5.7**:
   - Buttons: a Centre press made while the top button (Back) is held is ignored, so a loose wheel that closes both on one press only goes back.
   - Home: in Split, the album art pans smoothly instead of moving in small steps.
