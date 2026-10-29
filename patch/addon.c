@@ -40,6 +40,8 @@
 #define CARD "/mnt/mmc"
 #define CAPS_FILE "/tmp/q2-addon.caps"
 #define ADDON_CAPS "progress" /* this firmware's card-app features, space-separated */
+#define PROGRESS_H 8            /* a progress row's bar: a flat strip under its text */
+#define PROGRESS_TRACK 0x3a3a3a /* its unfilled part, dim against the black row */
 
 /* An app found on the card, kept for the life of demo in its slot. present: on the card at the
  * last scan; relaunch: stopped for USB storage, to start again; restart: stopped by Retry (its
@@ -523,7 +525,7 @@ static void stop_row(int i) {
 }
 
 /* A progress row: page_row_detail's item re-dressed, its title left and subtitle right on one line
- * over a bar the caption's width, which addon_paint draws as Now Playing's capsule. */
+ * over a bar the caption's width, which addon_paint fills from the left. */
 static void progress_row(void *item, int permille) {
     void *t = widget_get_child(item, 0), *s = widget_get_child(item, 1);
     int x = I(t, W_X), w = I(t, W_W);
@@ -534,7 +536,7 @@ static void progress_row(void *item, int permille) {
     widget_set_prop_int(s, "style:normal:text_color", (int)SPOT_GREY);
     widget_move_resize(s, x + w * 3 / 5, 4, w - w * 3 / 5, 32);
     pg.bar[pg.bars] =
-        widget_factory_create_widget(widget_factory(), "view", item, x, 44, w, np_bar_h());
+        widget_factory_create_widget(widget_factory(), "view", item, x, 44, w, PROGRESS_H);
     pg.pml[pg.bars++] = (short)(permille < 0 ? 0 : permille > 1000 ? 1000 : permille);
 }
 
@@ -958,22 +960,23 @@ static void plate(void *canvas, int x, int y, int w, int h, unsigned color, unsi
     }
 }
 
-/* ringnav_paint, every widget after stock painted it: a progress row's bar, as Now Playing's
- * capsule (the accent's light tone in iPod, stock red in Legacy), a fill at least as wide as it is
- * high; and the code, dark modules on the white plate, a row's run of them one rectangle, inside a
- * quiet zone of two modules. */
+/* ringnav_paint, every widget after stock painted it: a progress row's bar, a flat rectangle filled
+ * position/1000 of its width from the left, square, with no knob (the accent's light tone in iPod,
+ * stock red in Legacy, as Spotify's bar, over a dim track); and the code, dark modules on the white
+ * plate, a row's run of them one rectangle, inside a quiet zone of two modules. */
 void addon_paint(void *w, void *canvas) {
     for (int i = 0; pg.page && i < pg.bars; ++i)
         if (w == pg.bar[i] && P(canvas, CANVAS_LCD)) {
             unsigned fill = (unsigned)I(P(canvas, CANVAS_LCD), LCD_FILL_COLOR);
             int bw = I(w, W_W), h = I(w, W_H), x = bw * pg.pml[i] / 1000;
+            canvas_set_fill_color(canvas, rgba(PROGRESS_TRACK, 255));
+            canvas_fill_rect(canvas, 0, 0, bw, h);
 #if IPOD
-            unsigned tone = rgba(accent_tone(2), 255);
+            canvas_set_fill_color(canvas, rgba(accent_tone(2), 255));
 #else
-            unsigned tone = rgba(STOCK_RED, 255);
+            canvas_set_fill_color(canvas, rgba(STOCK_RED, 255));
 #endif
-            plate(canvas, 0, 0, bw, h, rgba(TRACK_COLOR, 255), (unsigned)h / 2);
-            if (x) plate(canvas, 0, 0, x < h ? h : x, h, tone, (unsigned)h / 2);
+            if (x) canvas_fill_rect(canvas, 0, 0, x, h);
             stock_canvas_set_fill_color(canvas, fill);
             return;
         }
