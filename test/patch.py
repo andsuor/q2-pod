@@ -10756,6 +10756,13 @@ assert len(s.rows())==501 and s.labels()[-2:]==['More…',''] and s.requests[-1]
 s.pick(500); s.answer('ok','pages','c11',arts(10,30)); assert s.requests[-1]==('downloads','c10')
 s.answer('error','Server down','',[]); assert s.requests[-1]==('downloads','c11') and len(s.rows())==31 and s.labels()[-2:]==['More…','']
 t=len(s.threads); s.advance(2000); assert len(s.threads)==t; passed()
+# Progress rows on the pages after the first have their bars too, drawn as the first page's (the bars once
+# stopped after ADDON_ROWS, 50).
+def progs(k): return [('progress','',f'Album {k*50+i:03}','','',str(10*i)) for i in range(50)]
+s=SlskMachine(); s.open(); s.answer('ok','refresh','',SMENU); s.pick(2); s.answer('ok','pages','c1',progs(0)); s.answer('ok','pages','',progs(1))
+bars=[next((v for v in s.nodes if s.nodes[v]['type']=='view' and s.get(v+O['W_PARENT'])==r),None) for r in s.rows()]
+w=375-2*O['CF_EDGE'] if variant=='ipod' else 350; s.bands.clear(); s.call(address=HOOKS['widget_on_paint_border'][0],args=(bars[60],s.canvas,0,0))
+assert len(bars)==100 and None not in bars and [b[:4] for b in s.bands]==[(0,0,w,8),(0,0,w*100//1000,8)],(bars.count(None),s.bands); passed()
 # Back twice to the menu; Phone Remote shows the QR code page from the add-on's status file.
 m.back(); m.answer('ok','refresh','50',[]); m.back(); m.answer('ok','refresh','',SMENU); assert m.labels()==SLABELS
 code=[[(x*7+y*3)%5<2 for x in range(21)] for y in range(21)]

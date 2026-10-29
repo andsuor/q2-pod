@@ -483,8 +483,11 @@ static struct {
                  QR code to show at the first answer */
     char term[64], aop[16];
     lv_t *lv; /* ADDON_DEPTH of them, calloc'd */
-    void *bar[ADDON_ROWS]; /* the shown page's progress bars, bars of them, each's pml permille */
-    short pml[ADDON_ROWS];
+    /* the shown list's progress bars, appended pages' too, bars of them, each's pml permille.
+     * ponytail: addon_paint looks each painted widget up among them, 500 at most; a bar could carry
+     * its index if that ever shows. */
+    void *bar[ADDON_ROWS * ADDON_PAGES];
+    short pml[ADDON_ROWS * ADDON_PAGES];
     int bars;
 } pg __attribute__((section(".scratch")));
 
@@ -581,7 +584,7 @@ static void row(lv_t *l, int i) {
     }
     void *item = (opens(l, i) ? page_row_detail_into : page_row_detail)(pg.view, i, cell(l, i, 2),
                                                                         cell(l, i, 3), clicked);
-    if (!strcmp(cell(l, i, 0), "progress") && pg.bars < ADDON_ROWS)
+    if (!strcmp(cell(l, i, 0), "progress") && pg.bars < ADDON_ROWS * ADDON_PAGES)
         progress_row(item, atoi(cell(l, i, 5)));
 }
 
