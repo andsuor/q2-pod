@@ -365,17 +365,22 @@ static const char *library_missing(char *why, unsigned size) {
     return 0;
 }
 
-/* Whether the scan or the import must wait: something plays from any source (stock's scan dialog
- * stops the player), a scan runs or its dialog is open, a dialog is on top (this poll runs inside
- * its own loop, a toast's too: no request starts there), or a page is open whose list either
- * rebuilds (the import reloads p_deque_playlist and p_deque_showlist; the scan the database). */
+/* Whether the scan or the import must wait: something plays (media_playing: the player, Spotify,
+ * radio, a video; or AirPlay, or the Bluetooth receiver, as ringnav_sleep's quiet check has it;
+ * stock's scan dialog stops the player), a scan runs or its dialog is open, a dialog is on top
+ * (this poll runs inside its own loop, a toast's too: no request starts there), or a page is open
+ * that lists the library: stock's, whose lists the import reloads (p_deque_playlist,
+ * p_deque_showlist), and Q2 Pod's own, which keep records read from the database the scan
+ * rebuilds. */
 static int library_busy(void) {
-    static const char *const pages[] = {
-        "usbmode_page",  "localclass_page", "playlist_page",  "playlistedit_page", "folder_page",
-        "allmusic_page", "album_page",      "coverflow_page", "artistinfo_page"
-    };
+    static const char *const pages[] = { "usbmode_page",      "localclass_page", "playlist_page",
+                                         "playlistedit_page", "folder_page",     "allmusic_page",
+                                         "album_page",        "coverflow_page",  "artistinfo_page",
+                                         "mostplayed_page",   "rated_page",      "longsongs_page",
+                                         "era_page",          "era_albums_page" };
     void *top = window_manager_get_top_window(window_manager());
-    if (media_playing() || scanning() || (top && !tk_strcmp(widget_get_type(top), "dialog")))
+    if (media_playing() || airplayGetFlag() == 2 || (signed char)bt__recv_pageflag == 2 ||
+        scanning() || (top && !tk_strcmp(widget_get_type(top), "dialog")))
         return 1;
     for (unsigned i = 0; i < sizeof pages / sizeof *pages; ++i)
         if (navigator_window_is_exist(pages[i])) return 1;
@@ -389,8 +394,9 @@ static void library_step(app_t *a) {
         unsigned n = state_read(path, libup.raw, sizeof libup.raw);
         if (!n || !(end = strstr(seq, "\n")) || end == seq) return;
         *end = 0;
-        if (end - seq >= (int)sizeof a->libseq) seq[sizeof a->libseq - 1] = 0; /* as kept */
-        if (!strcmp(seq, a->libseq)) return;                                   /* done already */
+        /* the seq as kept (cut to libseq's size); the one taken last is done already */
+        if (end - seq >= (int)sizeof a->libseq) seq[sizeof a->libseq - 1] = 0;
+        if (!strcmp(seq, a->libseq)) return;
         tk_snprintf(a->libseq, sizeof a->libseq, "%s", seq);
         tk_snprintf(libup.seq, sizeof libup.seq, "%s", seq);
         tk_snprintf(libup.done, sizeof libup.done, "%s.done", path);

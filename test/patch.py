@@ -10992,16 +10992,20 @@ m.open_pages=set(); m.poll(); assert len(m.imports)==k+1 and m.files[DONE]==b'16
 m.open_pages={'updatemusic_page'}; m.files[LIB]=bytearray(b'17\nscan\n'); m.poll(); assert len(m.opened)==n
 m.open_pages=set(); m.poll(); assert len(m.opened)==n+1; m.poll(); assert m.files[DONE]==b'17 ok\n'; passed()
 # One check (library_busy) holds the scan and the import alike: a dialog on top (a toast's or a confirm's own
-# loop polls too, and no request starts inside it), a Library page whose list either rebuilds, or something
-# playing from any source (the radio here, not the local player).
+# loop polls too, and no request starts inside it), a page listing the library (stock's, whose lists the import
+# reloads, and Q2 Pod's own, whose records the scan's database rebuild leaves stale), or something playing from
+# any source other than the local player: the radio, AirPlay, the Bluetooth receiver.
 radio=[0]; rs=payload_syms['radio_status']; top=m.top
 m.u.hook_add(UC_HOOK_CODE,lambda u,a,s,x: radio[0] and m.returns(2),begin=rs,end=rs)
 def busy(c,on):
     if c=='dialog': m.top=m.node('dialog','msginfo_dialog') if on else top
     elif c=='radio': radio[0]=on
+    elif c=='airplay': m.airplay=2 if on else 0
+    elif c=='bt': m.byte(syms['bt__recv_pageflag'],2 if on else 0)
     else: m.open_pages={c} if on else set()
 seq=100
-for c in ('dialog','album_page','playlist_page','playlistedit_page','coverflow_page','allmusic_page','artistinfo_page','radio'):
+for c in ('dialog','album_page','playlist_page','playlistedit_page','coverflow_page','allmusic_page','artistinfo_page','mostplayed_page',
+          'rated_page','longsongs_page','era_page','era_albums_page','radio','airplay','bt'):
     for body in ('scan\n',f'import {EXP}/Navidrome - Mix.m3u\n'):
         seq+=1; k,n=len(m.imports),len(m.opened); busy(c,1); m.files[LIB]=bytearray(f'{seq}\n{body}'.encode()); m.poll(); m.poll()
         assert (len(m.imports),len(m.opened))==(k,n) and not m.files[DONE].startswith(f'{seq} '.encode()),(c,body,m.files[DONE])
