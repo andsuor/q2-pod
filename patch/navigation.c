@@ -1791,10 +1791,6 @@ static int shortcut(void) {
     accent();
     return st.shortcut < 7 ? st.shortcut : rockbox_available() ? 0 : 3;
 }
-int ipod_classic(void) {
-    accent();
-    return st.theme;
-}
 int ipod_home(void) {
     accent();
     return st.home;
@@ -4949,7 +4945,7 @@ static void theme_preset(void) {
 }
 
 static int setting_click(void *ctx, void *event) {
-    int i = (int)(long)ctx, minimal = !i && !ipod_classic();
+    int i = (int)(long)ctx, minimal = !i && !st.theme;
     int *value = minimal ? &st.minimal_accent : setting_values[i];
     const char *key = minimal ? "MINIMAL_ACCENT" : setting_keys[i];
     /* Rockbox, Favorites, Shuffle, Rated Albums, Artists, Albums, Games */
