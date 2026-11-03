@@ -758,8 +758,8 @@ def validate_assets(directory):
         try: patch_asset(short, original[:-1]+b'x')
         except ValueError: pass
         else: raise AssertionError('Accepted a changed asset')
-    # S1b: every geometry set's built list windows take the row height of the page's pitch
-    # immediates (site_audit.py's PAGE_KIND: art pages take art_pitch), and its rows fit.
+    # Every geometry set's built list windows take the row height of the page's pitch
+    # immediates (art pages take art_pitch), and its rows fit.
     from theme import builtins, geometry_sets
     page_kind = {'localmusic/allmusic_page.bin': 'text', 'localmusic/albuminfo_page.bin': 'text',
                  'localmusic/artistinfo_page.bin': 'text', 'localmusic/playlist_page.bin': 'text',

@@ -16,7 +16,7 @@ from build import ROOT, check, fileoff, sha, jal
 
 AUDIT = json.loads((pathlib.Path(__file__).resolve().parents[1]/'patch/ipod.json').read_text())
 UI_ASSETS = AUDIT['assets'] | AUDIT['navbar_only'] | AUDIT['slide_only']
-# The named immediates' values, text rows' plain and art rows' art_ (site_audit.json's page tags).
+# The named immediates' values (ipod.json): text rows' plain, art rows' art_.
 VALUE_NAMES = list(dict.fromkeys(g['value'] for g in AUDIT['immediates'] if isinstance(g['value'], str)))
 INC = (ROOT/'patch/offsets.inc').read_text()
 
