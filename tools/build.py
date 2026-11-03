@@ -1426,7 +1426,11 @@ def build(zip_path, out, logo, dev=False, repo=REPO, aic_idle_wait=False, rotato
                f'#define Q2POD_TAG "{"" if dev else VERSION}"',  # netupdate.c: the release tag, none when --dev
                f'#define Q2POD_REPO "{repo}"',  # netupdate.c: the repo whose latest release it fetches
                f'#define Q2POD_UA "Q2Pod/{VERSION} (https://github.com/DiamondBond/q2-pod)"']  # onlinematch.c, as MusicBrainz asks
+    from theme import builtins, emit
+    themes = builtins()
+    header.append(f'#define THEME_N {len(themes)}')  # navigation.c setting_counts[]
     (out/'stock.h').write_text('\n'.join(header)+'\n')
+    emit(themes, out)
     ps = compile_payload(out)
     payload = (out/'patch.bin').read_bytes()
     check(len(payload) < SCRATCH-BASE, 'Payload overlaps its scratch page')
