@@ -20,6 +20,11 @@ typedef struct {
     unsigned values;       /* bitmask of values the row takes; 0: all of setting_counts[setting] */
 } option_t;
 typedef struct {
+    /* coverflow.shelf (px, brightness of 256), then coverflow.caption: offsets.inc's CF_* */
+    short top, x1, xs, z1, zs, eye, bright1, bright2, reflect, reflect_top, stride, radius;
+    short name_px, artist_px, text_y;
+} cf_style_t;
+typedef struct {
     const char *name; /* "Minimal": the Theme row's "Theme: %s" */
     unsigned char painter[PAINTER_N];
     unsigned char chevron_home, caps_mark, caps_home, caps_np, icons_mono, icons_badge_muted,
@@ -32,6 +37,7 @@ typedef struct {
     const option_t *opts;    /* Appearance rows after Theme, in order */
     unsigned char n_opts;
     unsigned char np_layout; /* NP_* */
+    cf_style_t cf;
 } theme_t;
 const theme_t *theme(void);   /* accent(); return &themes[st.theme]; */
 const scheme_t *scheme(void); /* &theme()->schemes[accent()] */
