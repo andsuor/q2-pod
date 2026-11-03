@@ -423,7 +423,9 @@ built-ins, matches every baked immediate, so it makes no syscall and writes noth
 `ui_redirects` for the theme's set loads as `<set>_<name>.bin` in the same folder
 (`dialog/volume_dialog` becomes `dialog/<set>_volume_dialog`). On device (S1 and S1b, 2026-11-02)
 mprotect/cacheflush returned 0 with a 4 kB page and Songs/Albums stepped 28/52 from the first open;
-the spike record stays local, so no link.
+the spike record stays local, so no link. The Library and Edit Playlist rows the payload builds
+follow the live geometry: `list_row_core` reads the Library constructor's body and icon x words
+after `theme_boot`, and Edit Playlist's row takes the set's `pitch` and `body` (`geom()`).
 
 ## Page transitions (iPod)
 
